@@ -94,8 +94,14 @@ const THUMB_BYTES = 220_000;
 const PREVIEW_MAX_EDGE = 512;
 
 const _err = console.error.bind(console);
+let passwordLoginActive = false;
+console.error = (...args: unknown[]) => {
+  if (!passwordLoginActive) _err(...args);
+};
 for (const level of ["log", "info", "debug", "warn"] as const) {
-  console[level] = (...args: unknown[]) => _err(`[linejs:${level}]`, ...args);
+  console[level] = (...args: unknown[]) => {
+    if (!passwordLoginActive) _err(`[linejs:${level}]`, ...args);
+  };
 }
 
 const textEnc = new TextEncoder();
@@ -1644,6 +1650,14 @@ async function handle(req: Json) {
         break;
       case "login_qr":
         await commands.loginQr(id);
+        break;
+      case "login_password":
+        passwordLoginActive = true;
+        try {
+          await commands.loginPassword(id, params);
+        } finally {
+          passwordLoginActive = false;
+        }
         break;
       case "login_token":
         await commands.loginToken(id, params.token as string | undefined);

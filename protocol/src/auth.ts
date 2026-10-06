@@ -49,3 +49,22 @@ export class AuthStore {
     }
   }
 }
+
+export type PasswordCredentials = { email: string; password: string };
+
+export function parsePasswordCredentials(
+  value: unknown,
+): PasswordCredentials | null {
+  if (!value || typeof value !== "object") return null;
+  const { email, password } = value as Record<string, unknown>;
+  if (typeof email !== "string" || typeof password !== "string") return null;
+  const normalized = email.trim();
+  const domain = normalized.split("@")[1] ?? "";
+  if (
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized) || password.length === 0 ||
+    domain.startsWith(".") || domain.endsWith(".")
+  ) {
+    return null;
+  }
+  return { email: normalized, password };
+}

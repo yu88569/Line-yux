@@ -11,7 +11,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+fn request_timeout(method: &str) -> Duration {
+    Duration::from_secs(if matches!(method, "login_qr" | "login_password") {
+        180
+    } else {
+        30
+    })
+}
 
 pub struct Sidecar {
     child: Arc<Mutex<Option<Child>>>,
@@ -19,9 +25,9 @@ pub struct Sidecar {
     next_id: AtomicU64,
     generation: Arc<AtomicU64>,
     pending_ids: Arc<Mutex<HashSet<u64>>>,
-    timeout_tx: std::sync::mpsc::Sender<(u64, Instant)>,
-    event_tx: Sender<ProtocolEvent>,
-    pub events: Receiver<ProtocolEvent>,
+    timeout_tx: std::sync::mpsc::Sender<(u64, Instant, u64)>,
+    event_tx: Sender<(u64, ProtocolEvent)>,
+    pub events: Receiver<(u64, ProtocolEvent)>,
     repo_root: PathBuf,
     data_dir: PathBuf,
 }
@@ -36,7 +42,7 @@ pub struct SidecarStatus {
 
 impl Sidecar {
     pub fn spawn(repo_root: &Path, data_dir: &Path) -> Result<Self> {
-        let (tx, rx) = async_channel::bounded::<ProtocolEvent>(1024);
+        let (tx, rx) = async_channel::bounded::<(u64, ProtocolEvent)>(1024);
         let pending_ids = Arc::new(Mutex::new(HashSet::new()));
         let (timeout_tx, timeout_rx) = std::sync::mpsc::channel();
         spawn_timeout_worker(timeout_rx, pending_ids.clone(), tx.clone());
@@ -132,9 +138,15 @@ impl Sidecar {
         thread::Builder::new()
             .name("line-sidecar-stdout".into())
             .spawn(move || {
-                read_loop(stdout, tx.clone(), pending_ids);
+                read_loop(
+                    stdout,
+                    tx.clone(),
+                    pending_ids,
+                    current_generation.clone(),
+                    generation,
+                );
                 if current_generation.load(Ordering::SeqCst) == generation {
-                    let _ = tx.send_blocking(ProtocolEvent::Exited(-1));
+                    let _ = tx.send_blocking((generation, ProtocolEvent::Exited(-1)));
                 }
             })
             .context("failed to start sidecar reader")?;
@@ -160,6 +172,7 @@ impl Sidecar {
         for name in ["auth-token.txt", "auth-device.txt"] {
             let _ = std::fs::remove_file(self.data_dir.join(name));
         }
+        while self.events.try_recv().is_ok() {}
         self.start_process()
     }
 
@@ -237,12 +250,27 @@ impl Sidecar {
             }
             return Err(error.into());
         }
-        let _ = self.timeout_tx.send((id, Instant::now()));
+        let _ = self.timeout_tx.send((
+            id,
+            Instant::now() + request_timeout(method),
+            self.generation.load(Ordering::SeqCst),
+        ));
         Ok(id)
+    }
+
+    pub fn is_current_generation(&self, generation: u64) -> bool {
+        self.generation.load(Ordering::SeqCst) == generation
     }
 
     pub fn login_qr(&self) -> Result<u64> {
         self.request("login_qr", None)
+    }
+
+    pub fn login_password(&self, email: &str, password: &str) -> Result<u64> {
+        self.request(
+            "login_password",
+            Some(json!({ "email": email, "password": password })),
+        )
     }
 
     pub fn list_chats(&self) -> Result<u64> {
@@ -456,11 +484,16 @@ fn which(bin: &str) -> Option<PathBuf> {
 
 fn read_loop<R: std::io::Read>(
     stdout: R,
-    tx: Sender<ProtocolEvent>,
+    tx: Sender<(u64, ProtocolEvent)>,
     pending_ids: Arc<Mutex<HashSet<u64>>>,
+    current_generation: Arc<AtomicU64>,
+    generation: u64,
 ) {
     let reader = BufReader::new(stdout);
     for line in reader.lines() {
+        if current_generation.load(Ordering::SeqCst) != generation {
+            break;
+        }
         let Ok(line) = line else { break };
         let line = line.trim();
         if line.is_empty() {
@@ -821,12 +854,16 @@ fn read_loop<R: std::io::Read>(
                         },
                         other => ProtocolEvent::Error(format!("unknown event: {other}")),
                     };
-                    if tx.send_blocking(ev).is_err() {
+                    if tx.send_blocking((generation, ev)).is_err() {
                         break;
                     }
                 } else if let Some(id) = resp.id {
-                    if let Ok(mut pending) = pending_ids.lock() {
-                        pending.remove(&id);
+                    if !pending_ids
+                        .lock()
+                        .map(|mut pending| pending.remove(&id))
+                        .unwrap_or(false)
+                    {
+                        continue;
                     }
                     let ev = ProtocolEvent::Response {
                         id,
@@ -834,7 +871,7 @@ fn read_loop<R: std::io::Read>(
                         result: resp.result.unwrap_or(Value::Null),
                         error: resp.error,
                     };
-                    if tx.send_blocking(ev).is_err() {
+                    if tx.send_blocking((generation, ev)).is_err() {
                         break;
                     }
                 }
@@ -847,14 +884,14 @@ fn read_loop<R: std::io::Read>(
 }
 
 fn spawn_timeout_worker(
-    rx: std::sync::mpsc::Receiver<(u64, Instant)>,
+    rx: std::sync::mpsc::Receiver<(u64, Instant, u64)>,
     pending_ids: Arc<Mutex<HashSet<u64>>>,
-    event_tx: Sender<ProtocolEvent>,
+    event_tx: Sender<(u64, ProtocolEvent)>,
 ) {
     let _ = thread::Builder::new()
         .name("line-sidecar-timeouts".into())
         .spawn(move || {
-            let mut deadlines = Vec::<(u64, Instant)>::new();
+            let mut deadlines = Vec::<(u64, Instant, u64)>::new();
             loop {
                 match rx.recv_timeout(Duration::from_millis(250)) {
                     Ok(item) => deadlines.push(item),
@@ -865,8 +902,8 @@ fn spawn_timeout_worker(
                     deadlines.push(item);
                 }
                 let now = Instant::now();
-                deadlines.retain(|(id, started)| {
-                    if now.duration_since(*started) < REQUEST_TIMEOUT {
+                deadlines.retain(|(id, deadline, generation)| {
+                    if now < *deadline {
                         return true;
                     }
                     let timed_out = pending_ids
@@ -874,12 +911,15 @@ fn spawn_timeout_worker(
                         .map(|mut pending| pending.remove(id))
                         .unwrap_or(false);
                     if timed_out {
-                        let _ = event_tx.send_blocking(ProtocolEvent::Response {
-                            id: *id,
-                            ok: false,
-                            result: Value::Null,
-                            error: Some("protocol request timed out".into()),
-                        });
+                        let _ = event_tx.send_blocking((
+                            *generation,
+                            ProtocolEvent::Response {
+                                id: *id,
+                                ok: false,
+                                result: Value::Null,
+                                error: Some("protocol request timed out".into()),
+                            },
+                        ));
                     }
                     false
                 });
@@ -890,5 +930,51 @@ fn spawn_timeout_worker(
 impl Drop for Sidecar {
     fn drop(&mut self) {
         self.stop_process();
+    }
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+
+    #[test]
+    fn auth_requests_allow_time_for_phone_confirmation() {
+        assert_eq!(request_timeout("login_qr"), Duration::from_secs(180));
+        assert_eq!(request_timeout("login_password"), Duration::from_secs(180));
+        assert_eq!(request_timeout("list_chats"), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn reader_discards_cancelled_events_and_unregistered_responses() {
+        let (tx, rx) = async_channel::bounded(10);
+        let pending = Arc::new(Mutex::new(HashSet::from([1])));
+        let generation = Arc::new(AtomicU64::new(2));
+        read_loop(
+            "{\"event\":\"pin\",\"pin\":\"1234\"}\n".as_bytes(),
+            tx.clone(),
+            pending.clone(),
+            generation.clone(),
+            1,
+        );
+        assert!(rx.try_recv().is_err());
+        read_loop(
+            "{\"id\":9,\"ok\":true}\n{\"id\":1,\"ok\":true}\n".as_bytes(),
+            tx,
+            pending.clone(),
+            generation,
+            2,
+        );
+        let (generation, event) = rx.try_recv().unwrap();
+        assert_eq!(generation, 2);
+        assert!(matches!(
+            event,
+            ProtocolEvent::Response {
+                id: 1,
+                ok: true,
+                ..
+            }
+        ));
+        assert!(rx.try_recv().is_err());
+        assert!(pending.lock().unwrap().is_empty());
     }
 }

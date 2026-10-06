@@ -1257,8 +1257,35 @@ fn wire_actions(state: &AppState) {
 
     let s = state.clone();
     state.login.retry_btn.connect_clicked(move |_| {
-        restart_qr_login(&s);
+        restart_login(&s);
     });
+
+    let s = state.clone();
+    state.login.method_btn.connect_clicked(move |_| {
+        s.login
+            .method
+            .set(if s.login.method.get() == login::LoginMethod::Qr {
+                login::LoginMethod::Email
+            } else {
+                login::LoginMethod::Qr
+            });
+        restart_login(&s);
+    });
+    let s = state.clone();
+    state
+        .login
+        .submit_btn
+        .connect_clicked(move |_| submit_email_login(&s));
+    let s = state.clone();
+    state
+        .login
+        .email
+        .connect_activate(move |_| submit_email_login(&s));
+    let s = state.clone();
+    state
+        .login
+        .password
+        .connect_activate(move |_| submit_email_login(&s));
 
     let s = state.clone();
     state.settings_btn.connect_clicked(move |_| {
@@ -1551,10 +1578,43 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     sync_discord_rpc(state);
 }
 
-fn restart_qr_login(state: &AppState) {
+fn submit_email_login(state: &AppState) {
+    if state.login.method.get() != login::LoginMethod::Email
+        || state.login.phase.get() != login::LoginPhase::Idle
+    {
+        return;
+    }
+    let email = state.login.email.text().trim().to_owned();
+    let password = state.login.password.text().to_string();
+    if !login::valid_credentials(&email, &password) {
+        state
+            .login
+            .hint
+            .set_text(&crate::i18n::t("invalid_login_credentials"));
+        return;
+    }
+    state.login.password.set_text("");
+    match state.sidecar.login_password(&email, &password) {
+        Ok(id) => {
+            login::set_phase(&state.login, login::LoginPhase::Busy);
+            state.pending.borrow_mut().insert(id, Pending::Login);
+            state
+                .login
+                .hint
+                .set_text(&crate::i18n::t("login_email_waiting"));
+        }
+        Err(_) => state
+            .login
+            .hint
+            .set_text(&crate::i18n::t("email_login_failed")),
+    }
+}
+
+fn restart_login(state: &AppState) {
     *state.restarting.borrow_mut() = true;
     state.pending.borrow_mut().clear();
-    login::show_qr_stage(&state.login);
+    login::show_method_stage(&state.login);
+    login::set_phase(&state.login, login::LoginPhase::Restarting);
     state
         .login
         .hint
@@ -1563,6 +1623,7 @@ fn restart_qr_login(state: &AppState) {
 
     if let Err(e) = state.sidecar.restart() {
         *state.restarting.borrow_mut() = false;
+        login::show_method_stage(&state.login);
         toast(
             state,
             &crate::i18n::tf("restart_failed_err", &[("error", &e.to_string())]),

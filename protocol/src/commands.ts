@@ -1,6 +1,7 @@
 import {
   type Client,
   loginWithAuthToken,
+  loginWithPassword,
   loginWithQR,
   type TalkMessage,
 } from "@evex/linejs";
@@ -9,7 +10,7 @@ import { join } from "@std/path";
 import { atomicWriteJson } from "./storage.ts";
 import type { CachePolicy } from "./cache_policy.ts";
 import { friendName, picturePathOf } from "./contacts.ts";
-import type { LineDevice } from "./auth.ts";
+import { type LineDevice, parsePasswordCredentials } from "./auth.ts";
 
 type Json = Record<string, unknown>;
 type ChatRow = {
@@ -199,6 +200,39 @@ export function createCommandService(runtime: CommandRuntime) {
     patchE2eeGuards();
     await startListen();
     ok(id, { ...(await myProfilePayload(profile)), device });
+  }
+
+  async function doLoginPassword(id: number | string | null, params: unknown) {
+    const credentials = parsePasswordCredentials(params);
+    if (!credentials) {
+      fail(id, "invalid_login_credentials");
+      return;
+    }
+    try {
+      runtime.setAuthDead(false);
+      const device = LINE_DEVICE === "DESKTOPWIN"
+        ? "ANDROIDSECONDARY"
+        : LINE_DEVICE;
+      const client = await loginWithPassword(
+        {
+          ...credentials,
+          onPincodeRequest: (pin) => emitEvent("pin", { pin }),
+        },
+        {
+          device,
+          version: LINE_VERSION,
+          storage: new FileStorage(storagePath),
+        },
+      );
+      runtime.setClient(client);
+      await saveAuth(client.authToken, device);
+      const profile = await client.getMyProfile();
+      patchE2eeGuards();
+      await startListen();
+      ok(id, { ...(await myProfilePayload(profile)), device });
+    } catch {
+      fail(id, "email_login_failed");
+    }
   }
 
   async function doLoginToken(id: number | string | null, token?: string) {
@@ -673,6 +707,7 @@ export function createCommandService(runtime: CommandRuntime) {
   return {
     markRead: doMarkRead,
     loginQr: doLoginQr,
+    loginPassword: doLoginPassword,
     loginToken: doLoginToken,
     listChats: doListChats,
     fetchMessages: doFetchMessages,

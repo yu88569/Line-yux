@@ -156,7 +156,7 @@
   "login_subtitle": "สแกน QR ด้วย LINE บนมือถือ",
   "login_qr_hint": "สแกน QR ด้วย LINE บนมือถือ",
   "login_pin_caption": "กรอก PIN นี้บนโทรศัพท์",
-  "login_retry": "ลองสแกน QR อีกครั้ง",
+  "login_retry": "ลองอีกครั้ง",
   "login_note": "นอกทางการ มีความเสี่ยงตาม ToS ของ LINE แนะนำใช้เซสชันสำรอง",
   "login_pin_waiting": "กรอก PIN นี้ในแอป LINE",
   "login_starting_engine": "กำลังเริ่ม…",
@@ -330,5 +330,15 @@
   "restart_failed_err": "เริ่มใหม่ไม่สำเร็จ: {error}",
   "friends_load_failed": "โหลดรายชื่อเพื่อนไม่สำเร็จ",
   "bad_profile": "ข้อมูลโปรไฟล์ไม่ถูกต้อง: {error}",
-  "file_read_failed": "อ่านไฟล์ไม่สำเร็จ: {error}"
+  "file_read_failed": "อ่านไฟล์ไม่สำเร็จ: {error}",
+  "login_email": "อีเมล",
+  "login_password": "รหัสผ่าน",
+  "login_submit": "เข้าสู่ระบบ",
+  "login_use_email": "เข้าสู่ระบบด้วยอีเมล",
+  "login_use_qr": "เข้าสู่ระบบด้วย QR code",
+  "login_email_help": "ใช้อีเมลที่ลงทะเบียนใน LINE และเปิดอนุญาตให้เข้าสู่ระบบใน LINE บนโทรศัพท์",
+  "login_email_hint": "กรอกอีเมลและรหัสผ่าน LINE ของคุณ",
+  "login_email_waiting": "กำลังเข้าสู่ระบบ หากมีการร้องขอให้ยืนยันบนโทรศัพท์",
+  "invalid_login_credentials": "กรอกอีเมลให้ถูกต้องและกรอกรหัสผ่าน",
+  "email_login_failed": "เข้าสู่ระบบไม่สำเร็จ ตรวจสอบอีเมล รหัสผ่าน และการอนุญาตให้เข้าสู่ระบบบนโทรศัพท์ แล้วลองอีกครั้ง"
 }
