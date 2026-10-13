@@ -313,11 +313,12 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 chat.muted = muted;
             }
             if state.current_chat.borrow().as_deref() == Some(mid.as_str()) {
-                update_mute_btn(state, muted);
+                update_mute_btn(state, effective_chat_mute(state, &mid));
             }
+            refresh_chat_row_status(state, &mid);
             toast(
                 state,
-                &if muted {
+                &if effective_chat_mute(state, &mid) {
                     crate::i18n::t("chat_muted")
                 } else {
                     crate::i18n::t("chat_unmuted")
@@ -438,17 +439,13 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                                 state.chat_subtitle.set_text(&crate::i18n::t("refreshing"));
                             }
                         }
-                        "ready" => {
-                            if state.message_list.first_child().is_some() {
-                                set_msg_state(state, "list", None);
-                            }
+                        "ready" if state.message_list.first_child().is_some() => {
+                            set_msg_state(state, "list", None);
                         }
-                        "empty" => {
-                            // Don't clobber a thread that already has rows (e.g. optimistic send).
-                            if state.message_list.first_child().is_none() {
-                                set_msg_state(state, "empty", Some(&crate::i18n::t("no_messages")));
-                                state.chat_subtitle.set_text(&crate::i18n::t("empty"));
-                            }
+                        // Don't clobber a thread that already has rows (e.g. optimistic send).
+                        "empty" if state.message_list.first_child().is_none() => {
+                            set_msg_state(state, "empty", Some(&crate::i18n::t("no_messages")));
+                            state.chat_subtitle.set_text(&crate::i18n::t("empty"));
                         }
                         "error" => {
                             let msg = error.unwrap_or_else(|| "Failed to load messages".into());
@@ -581,16 +578,16 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         friends::apply_friends(ui, friends);
                     }
                 }
-                Some(Pending::FetchMessages { chat_mid }) => {
-                    if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str()) {
-                        let messages: Vec<MessageInfo> = result
-                            .get("messages")
-                            .cloned()
-                            .and_then(|v| serde_json::from_value(v).ok())
-                            .unwrap_or_default();
-                        if !same_message_list(state, &chat_mid, &messages) {
-                            apply_messages(state, messages);
-                        }
+                Some(Pending::FetchMessages { chat_mid })
+                    if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str()) =>
+                {
+                    let messages: Vec<MessageInfo> = result
+                        .get("messages")
+                        .cloned()
+                        .and_then(|v| serde_json::from_value(v).ok())
+                        .unwrap_or_default();
+                    if !same_message_list(state, &chat_mid, &messages) {
+                        apply_messages(state, messages);
                     }
                 }
                 Some(Pending::Send {
@@ -635,7 +632,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         toast(state, &crate::i18n::t("media_download_failed"));
                     }
                 }
-                None => {}
+                Some(Pending::FetchMessages { .. }) | None => {}
             }
         }
         ProtocolEvent::Error(e) => toast(state, &e),

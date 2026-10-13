@@ -9,14 +9,7 @@ pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &st
     if !notifications_allowed(state) {
         return;
     }
-    let muted = state
-        .chats
-        .borrow()
-        .iter()
-        .find(|c| c.mid == peer_mid)
-        .map(|c| c.muted)
-        .unwrap_or(false);
-    if muted {
+    if super::effective_chat_mute(state, peer_mid) {
         return;
     }
     let (name, avatar_path) = state
@@ -74,14 +67,7 @@ pub(super) fn refresh_notification_media(state: &AppState, message_id: &str, ima
     let Some(meta) = state.notif_pending.borrow().get(message_id).cloned() else {
         return;
     };
-    let muted = state
-        .chats
-        .borrow()
-        .iter()
-        .find(|c| c.mid == meta.chat_mid)
-        .map(|c| c.muted)
-        .unwrap_or(false);
-    if muted {
+    if super::effective_chat_mute(state, &meta.chat_mid) {
         return;
     }
     let viewing = state.current_chat.borrow().as_deref() == Some(meta.chat_mid.as_str());

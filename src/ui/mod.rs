@@ -1,5 +1,7 @@
 mod call_window;
 mod calls;
+#[cfg(test)]
+mod chat_tests;
 mod chats;
 mod composer_media;
 mod diagnostics;
@@ -57,7 +59,12 @@ pub fn run(repo_root: PathBuf, data_dir: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<()> {
+fn build_state(
+    app: &Application,
+    repo_root: PathBuf,
+    data_dir: PathBuf,
+    sidecar: Rc<Sidecar>,
+) -> (AppState, async_channel::Receiver<crate::tray::TrayAction>) {
     shell::load_css();
     register_app_icons(&repo_root);
     let config = Rc::new(RefCell::new(AppConfig::load(&data_dir)));
@@ -65,7 +72,6 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     apply_font(&config.borrow().font_family, config.borrow().font_scale);
     apply_animations(config.borrow().animations);
 
-    let sidecar = Rc::new(Sidecar::spawn(&repo_root, &data_dir)?);
     crate::i18n::set_lang(&repo_root, &config.borrow().language);
 
     let window = ApplicationWindow::builder()
@@ -226,6 +232,12 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         media_ready_paths: Rc::new(RefCell::new(HashMap::new())),
     };
 
+    (state, tray_rx)
+}
+
+fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<()> {
+    let sidecar = Rc::new(Sidecar::spawn(&repo_root, &data_dir)?);
+    let (state, tray_rx) = build_state(app, repo_root, data_dir, sidecar);
     apply_ui_language(&state);
     apply_ui_motion(&state);
     wire_sidebar(&state);
@@ -482,9 +494,10 @@ fn refresh_tray_menu(state: &AppState) {
     };
     let muted_until = notifications_muted_until_epoch(state);
     let mut chats = state.chats.borrow().clone();
-    chats.sort_by_key(|chat| std::cmp::Reverse(chat.last_activity));
+    sort_chats(&mut chats, &state.config.borrow());
     let recent: Vec<crate::tray::TrayChatItem> = chats
         .into_iter()
+        .filter(|c| !state.config.borrow().chat_hidden(&c.mid))
         .take(8)
         .map(|c| crate::tray::TrayChatItem {
             mid: c.mid,
@@ -793,7 +806,7 @@ fn apply_chat_row_compact(row: &gtk::ListBoxRow, compact: bool) {
         box_.set_margin_end(0);
         box_.set_margin_top(8);
         box_.set_margin_bottom(8);
-        box_.set_spacing(0);
+        box_.set_spacing(6);
     } else {
         box_.set_halign(gtk::Align::Fill);
         box_.set_hexpand(true);
@@ -1084,6 +1097,12 @@ fn apply_ui_language(state: &AppState) {
             label.set_text(&chat.preview);
         }
     }
+    for chat in state.chats.borrow().iter() {
+        refresh_chat_row_status(state, &chat.mid);
+    }
+    if let Some(mid) = state.current_chat.borrow().as_deref() {
+        update_mute_btn(state, effective_chat_mute(state, mid));
+    }
     sync_discord_rpc(state);
 }
 
@@ -1244,6 +1263,7 @@ fn wire_actions(state: &AppState) {
         jump_to_latest(&s);
     });
 
+    wire_chat_context_menu(state);
     let s = state.clone();
     state.chat_list.connect_row_activated(move |_list, row| {
         let idx = row.index() as usize;
@@ -1293,6 +1313,30 @@ fn wire_actions(state: &AppState) {
             sidecar: s.sidecar.clone(),
             data_dir: s.data_dir.clone(),
             config: s.config.clone(),
+            hidden_chats: {
+                let config = s.config.borrow();
+                let chats = s.chats.borrow();
+                let mut hidden: Vec<_> = config
+                    .chat_preferences
+                    .iter()
+                    .filter(|(_, p)| p.hidden)
+                    .map(|(mid, _)| {
+                        let name = chats
+                            .iter()
+                            .find(|c| &c.mid == mid)
+                            .map(|c| c.name.clone())
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or_else(|| mid.clone());
+                        (mid.clone(), name)
+                    })
+                    .collect();
+                hidden.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+                hidden
+            },
+            on_restore_chat: {
+                let s2 = s.clone();
+                Rc::new(move |mid| set_chat_hidden(&s2, mid, false))
+            },
             on_logout: {
                 let s2 = s.clone();
                 Rc::new(move || {
@@ -1514,6 +1558,9 @@ fn request_friends_list(state: &AppState) {
 }
 
 fn open_chat(state: &AppState, chat: &ChatInfo) {
+    if state.config.borrow().chat_hidden(&chat.mid) {
+        return;
+    }
     if !*state.session_ready.borrow() {
         toast(state, &crate::i18n::t("still_restoring"));
         return;
@@ -1551,9 +1598,8 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
         .set_text(&crate::i18n::tf("chat_prefix", &[("name", &chat.name)]));
     // Voice calls are 1:1 user chats only (bots/groups unsupported).
     refresh_call_controls(state);
-    let can_mute = chat.mid.starts_with('u');
-    state.mute_btn.set_sensitive(can_mute);
-    update_mute_btn(state, chat.muted);
+    state.mute_btn.set_sensitive(true);
+    update_mute_btn(state, effective_chat_mute(state, &chat.mid));
     state.media_queue.borrow_mut().clear();
     set_msg_state(state, "loading", None);
     clear_messages(state);

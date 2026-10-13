@@ -12,6 +12,8 @@ pub struct SettingsDeps {
     pub sidecar: Rc<Sidecar>,
     pub data_dir: PathBuf,
     pub config: Rc<RefCell<AppConfig>>,
+    pub hidden_chats: Vec<(String, String)>,
+    pub on_restore_chat: Rc<dyn Fn(&str)>,
     pub on_logout: Rc<dyn Fn()>,
     pub on_lang: Rc<dyn Fn()>,
     pub on_animations: Rc<dyn Fn(bool)>,
@@ -27,6 +29,43 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         .title(i18n::t("settings"))
         .search_enabled(true)
         .build();
+
+    let chats_page = libadwaita::PreferencesPage::builder()
+        .title(i18n::t("hidden_chats"))
+        .icon_name("view-list-symbolic")
+        .build();
+    let hidden_group = libadwaita::PreferencesGroup::builder()
+        .title(i18n::t("hidden_chats"))
+        .description(i18n::t("hidden_chats_description"))
+        .build();
+    if deps.hidden_chats.is_empty() {
+        hidden_group.add(
+            &libadwaita::ActionRow::builder()
+                .title(i18n::t("no_hidden_chats"))
+                .build(),
+        );
+    }
+    for (mid, name) in &deps.hidden_chats {
+        let row = libadwaita::ActionRow::builder().title(name).build();
+        let restore = gtk::Button::builder()
+            .label(i18n::t("restore_chat"))
+            .valign(gtk::Align::Center)
+            .build();
+        let callback = deps.on_restore_chat.clone();
+        let mid = mid.clone();
+        let weak_row = row.downgrade();
+        let weak_group = hidden_group.downgrade();
+        restore.connect_clicked(move |_| {
+            callback(&mid);
+            if let (Some(group), Some(row)) = (weak_group.upgrade(), weak_row.upgrade()) {
+                group.remove(&row);
+            }
+        });
+        row.add_suffix(&restore);
+        row.set_activatable_widget(Some(&restore));
+        hidden_group.add(&row);
+    }
+    chats_page.add(&hidden_group);
 
     // ---- Appearance ----
     let appearance = libadwaita::PreferencesPage::builder()
@@ -346,6 +385,7 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
     font_grp.add(&scale_row);
     appearance.add(&font_grp);
     win.add(&appearance);
+    win.add(&chats_page);
 
     // ---- Features ----
     let features = libadwaita::PreferencesPage::builder()

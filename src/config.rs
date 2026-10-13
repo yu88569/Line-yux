@@ -1,13 +1,24 @@
 use gtk::CssProvider;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChatPreferences {
+    pub hidden: bool,
+    pub pinned: bool,
+    /// None follows LINE; Some is an explicit preference in this app only.
+    pub muted: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
+    pub chat_preferences: HashMap<String, ChatPreferences>,
     pub theme: String,    // system | dark | light
     pub language: String, // en | th
     pub font_scale: f64,  // UI scale 0.60 .. 1.40 (1.0 = 100%)
@@ -65,6 +76,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            chat_preferences: HashMap::new(),
             theme: "system".into(),
             language: "th".into(),
             font_scale: 1.0,
@@ -100,6 +112,21 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn chat_hidden(&self, mid: &str) -> bool {
+        self.chat_preferences.get(mid).is_some_and(|p| p.hidden)
+    }
+
+    pub fn chat_pinned(&self, mid: &str) -> bool {
+        self.chat_preferences.get(mid).is_some_and(|p| p.pinned)
+    }
+
+    pub fn chat_muted(&self, mid: &str, server_muted: bool) -> bool {
+        self.chat_preferences
+            .get(mid)
+            .and_then(|p| p.muted)
+            .unwrap_or(server_muted)
+    }
+
     pub fn path(data_dir: &std::path::Path) -> PathBuf {
         data_dir.join("settings.json")
     }
@@ -254,6 +281,70 @@ pub fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_chat_preferences_round_trip_without_changing_server_mute() {
+        let source = serde_json::json!({"chat_preferences": {
+            "c-group": {"hidden": true, "pinned": true, "muted": false},
+            "u-friend": {"muted": true}
+        }});
+        let cfg: AppConfig = serde_json::from_value(source).unwrap();
+        let saved = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(saved["chat_preferences"]["c-group"]["hidden"], true);
+        assert_eq!(saved["chat_preferences"]["c-group"]["pinned"], true);
+        assert_eq!(saved["chat_preferences"]["c-group"]["muted"], false);
+        assert_eq!(saved["chat_preferences"]["u-friend"]["muted"], true);
+        let dir =
+            std::env::temp_dir().join(format!("line-gtk-chat-prefs-test-{}", std::process::id()));
+        cfg.save_atomic(&dir).unwrap();
+        let restarted = AppConfig::load(&dir);
+        assert!(restarted.chat_hidden("c-group"));
+        assert!(restarted.chat_pinned("c-group"));
+        assert!(!restarted.chat_muted("c-group", true));
+        assert!(restarted.chat_muted("u-friend", false));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn local_mute_can_override_either_server_value_and_defaults_follow_server() {
+        let mut cfg = AppConfig::default();
+        assert!(!cfg.chat_muted("c-group", false));
+        assert!(cfg.chat_muted("c-group", true));
+        cfg.chat_preferences
+            .entry("c-group".into())
+            .or_default()
+            .muted = Some(true);
+        assert!(cfg.chat_muted("c-group", false));
+        cfg.chat_preferences.get_mut("c-group").unwrap().muted = Some(false);
+        assert!(!cfg.chat_muted("c-group", true));
+        assert!(cfg.chat_muted("u-other", true));
+    }
+
+    #[test]
+    fn hiding_and_restoring_preserves_pin_and_independent_mute() {
+        let mut cfg = AppConfig::default();
+        let prefs = cfg.chat_preferences.entry("u-friend".into()).or_default();
+        prefs.hidden = true;
+        prefs.pinned = true;
+        prefs.muted = Some(false);
+        let mut reloaded: AppConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert!(reloaded.chat_hidden("u-friend"));
+        assert!(reloaded.chat_pinned("u-friend"));
+        assert!(!reloaded.chat_muted("u-friend", true));
+        reloaded
+            .chat_preferences
+            .get_mut("u-friend")
+            .unwrap()
+            .hidden = false;
+        assert!(!reloaded.chat_hidden("u-friend"));
+        assert!(reloaded.chat_pinned("u-friend"));
+        assert!(!reloaded.chat_muted("u-friend", true));
+        let old: AppConfig = serde_json::from_str("{}").unwrap();
+        assert!(!old.chat_hidden("u-friend"));
+        assert!(!old.chat_pinned("u-friend"));
+        assert!(old.chat_muted("u-friend", true));
+    }
 
     #[test]
     fn normalize_rejects_invalid_values() {

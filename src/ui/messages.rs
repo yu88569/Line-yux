@@ -1053,16 +1053,9 @@ pub(super) fn filter_chats(state: &AppState, query: &str) {
     let chats = state.chats.borrow();
     let mut idx = 0;
     while let Some(row) = state.chat_list.row_at_index(idx) {
-        let visible = if q.is_empty() {
-            true
-        } else {
-            chats
-                .get(idx as usize)
-                .map(|c| {
-                    c.name.to_lowercase().contains(&q) || c.preview.to_lowercase().contains(&q)
-                })
-                .unwrap_or(true)
-        };
+        let visible = chats
+            .get(idx as usize)
+            .is_some_and(|chat| chat_matches(&state.config.borrow(), chat, &q));
         row.set_visible(visible);
         idx += 1;
     }

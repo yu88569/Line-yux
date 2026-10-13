@@ -340,5 +340,19 @@
   "login_email_hint": "Enter your LINE email and password.",
   "login_email_waiting": "Signing in. Confirm the login on your phone if requested.",
   "invalid_login_credentials": "Enter a valid email and a password.",
-  "email_login_failed": "Login failed. Check your credentials and Allow login on your phone, then retry."
+  "email_login_failed": "Login failed. Check your credentials and Allow login on your phone, then retry.",
+  "email_login_format_unsupported": "This login method rejected the email or password format. Check your input or use QR code login.",
+  "email_login_network_failed": "Could not connect to LINE. Check your connection and retry.",
+  "email_login_disallowed": "LINE did not allow login on this device. Check Allow login on your phone or use QR code login.",
+  "email_login_rejected": "LINE rejected the email or password. Check your credentials and retry.",
+  "email_login_rate_limited": "LINE limited login attempts. Wait before trying again.",
+  "hide_chat": "Hide this chat",
+  "pin_chat": "Pin chat",
+  "unpin_chat": "Unpin chat",
+  "hidden_chats": "Hidden chats",
+  "hidden_chats_description": "Hidden chats stay hidden until you restore them here. Notification settings are independent.",
+  "no_hidden_chats": "No hidden chats",
+  "restore_chat": "Restore",
+  "chat_pinned_status": "Pinned chat",
+  "chat_muted_status": "Chat notifications muted"
 }

@@ -358,10 +358,6 @@ impl Sidecar {
         )
     }
 
-    pub fn mute_chat(&self, mid: &str, muted: bool) -> Result<u64> {
-        self.request("mute_chat", Some(json!({ "mid": mid, "muted": muted })))
-    }
-
     pub fn call_start(
         &self,
         mid: &str,

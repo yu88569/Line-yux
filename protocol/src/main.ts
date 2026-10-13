@@ -347,6 +347,9 @@ const commands = createCommandService({
   emitEvent,
   ok,
   fail,
+  reportPasswordLoginFailure: (diagnostic) => {
+    _err("[login_password]", JSON.stringify(diagnostic));
+  },
 });
 
 function storeBoxCursor(

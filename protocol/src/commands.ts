@@ -1,7 +1,6 @@
 import {
   type Client,
   loginWithAuthToken,
-  loginWithPassword,
   loginWithQR,
   type TalkMessage,
 } from "@evex/linejs";
@@ -10,7 +9,13 @@ import { join } from "@std/path";
 import { atomicWriteJson } from "./storage.ts";
 import type { CachePolicy } from "./cache_policy.ts";
 import { friendName, picturePathOf } from "./contacts.ts";
-import { type LineDevice, parsePasswordCredentials } from "./auth.ts";
+import {
+  classifyPasswordLoginFailure,
+  type LineDevice,
+  parsePasswordCredentials,
+  type PasswordLoginDiagnostic,
+} from "./auth.ts";
+import { loginWithPassword } from "./password_login.ts";
 
 type Json = Record<string, unknown>;
 type ChatRow = {
@@ -96,6 +101,7 @@ export type CommandRuntime = {
   emitEvent: (event: string, payload?: Json) => void;
   ok: (id: number | string | null, result?: unknown) => void;
   fail: (id: number | string | null, error: string) => void;
+  reportPasswordLoginFailure?: (diagnostic: PasswordLoginDiagnostic) => void;
 };
 
 export function createCommandService(runtime: CommandRuntime) {
@@ -230,8 +236,12 @@ export function createCommandService(runtime: CommandRuntime) {
       patchE2eeGuards();
       await startListen();
       ok(id, { ...(await myProfilePayload(profile)), device });
-    } catch {
-      fail(id, "email_login_failed");
+    } catch (error) {
+      const { messageKey, ...diagnostic } = classifyPasswordLoginFailure(
+        error,
+      );
+      runtime.reportPasswordLoginFailure?.(diagnostic);
+      fail(id, messageKey);
     }
   }
 
