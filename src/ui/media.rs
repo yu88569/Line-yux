@@ -294,9 +294,9 @@ pub(super) fn request_media_action(
         .get(&msg.id)
         .cloned()
         .unwrap_or_else(|| msg.clone());
-    let for_viewer =
-        matches!(&action, PendingMediaAction::ViewOrSave(value) if value == "open_viewer");
-    if let Some(path) = local_media_path(&msg, for_viewer) {
+    let needs_full_media = msg.content_type.eq_ignore_ascii_case("IMAGE")
+        || matches!(&action, PendingMediaAction::ViewOrSave(value) if value == "open_viewer");
+    if let Some(path) = local_media_path(&msg, needs_full_media) {
         finish_downloaded_media_action(
             state,
             &action,
@@ -342,7 +342,7 @@ pub(super) fn finish_downloaded_media_action(
             finish_media_action(state, action, path, suggest_name, content_type)
         }
         PendingMediaAction::ShareFile { chat_mid, .. } => {
-            file_actions::send_shared_file(state, chat_mid, path, suggest_name)
+            file_actions::send_shared_media(state, chat_mid, path, suggest_name, content_type)
         }
     }
 }
@@ -378,8 +378,8 @@ pub(super) fn finish_media_action(
             ),
         },
         "save_dialog" => save_media_as(state, path, suggest_name, content_type),
-        "file_save" => save_media_to_default(state, path, suggest_name, "FILE"),
-        "file_save_as" => show_media_save_dialog(state, path, suggest_name, "FILE"),
+        "file_save" => save_media_to_default(state, path, suggest_name, content_type),
+        "file_save_as" => show_media_save_dialog(state, path, suggest_name, content_type),
         "play_audio" => {
             if let Err(e) = play_audio_file(path, &state.config.borrow().audio_output) {
                 toast(
@@ -1826,7 +1826,19 @@ pub(super) fn mark_media_failed(state: &AppState, message_id: &str) {
         .xalign(0.0)
         .css_classes(["dim-label", "line-media-failed"])
         .build();
-    bubble.append(&label);
+    append_media_visual(&bubble, &label);
+}
+
+pub(super) fn append_media_visual(bubble: &gtk::Box, visual: &impl IsA<gtk::Widget>) {
+    let mut child = bubble.first_child();
+    while let Some(widget) = child {
+        if widget.has_css_class("line-file-actions") {
+            bubble.insert_child_after(visual, widget.prev_sibling().as_ref());
+            return;
+        }
+        child = widget.next_sibling();
+    }
+    bubble.append(visual);
 }
 
 pub(super) fn make_media_picture_placeholder(sticker: bool) -> gtk::Picture {
@@ -2059,7 +2071,7 @@ pub(super) fn attach_texture_async_anim(
                         .xalign(0.0)
                         .css_classes(["dim-label", "line-media-failed"])
                         .build();
-                    box_.append(&label);
+                    append_media_visual(box_, &label);
                 }
             }
         }
@@ -2152,10 +2164,10 @@ pub(super) fn pump_media_queue(state: &AppState) {
                     let overlay = wrap_video_thumb(&state2, &pic, msg);
                     bubble2.append(&overlay);
                 } else {
-                    bubble2.append(&pic);
+                    append_media_visual(&bubble2, &pic);
                 }
             } else {
-                bubble2.append(&pic);
+                append_media_visual(&bubble2, &pic);
                 if !is_sticker
                     && is_image
                     && let Some(msg) = msg.as_ref()

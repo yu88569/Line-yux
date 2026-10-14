@@ -322,6 +322,7 @@ pub(super) fn send_sticker_now(
                     file_path: None,
                     duration_ms: None,
                     flex: None,
+                    album: None,
                 },
             );
             dismiss_new_marker(state);
@@ -599,14 +600,6 @@ pub(super) fn write_clipboard_bytes(
     Ok(dest)
 }
 
-pub(super) fn send_local_media_path(state: &AppState, path: PathBuf) {
-    let Some(chat) = state.current_chat.borrow().clone() else {
-        toast(state, &crate::i18n::t("select_chat_first"));
-        return;
-    };
-    stage_attachment(state, &chat, path);
-}
-
 pub(super) fn start_voice_record(state: &AppState) {
     let Some(_chat_mid) = state.current_chat.borrow().clone() else {
         toast(state, &crate::i18n::t("select_chat_first"));
@@ -809,6 +802,7 @@ pub(super) fn finish_voice_record(state: &AppState, send: bool) {
                     file_path: Some(path_str),
                     duration_ms: Some(duration_ms as i64),
                     flex: None,
+                    album: None,
                 },
             );
             show_upload_progress(state, 0.02, &crate::i18n::t("media_uploading"));

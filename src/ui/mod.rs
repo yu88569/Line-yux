@@ -1,3 +1,4 @@
+mod albums;
 #[cfg(test)]
 mod attachment_draft_tests;
 mod attachment_drafts;
@@ -18,6 +19,7 @@ mod login;
 mod media;
 mod messages;
 mod notifications;
+mod sender_avatars;
 mod settings;
 mod shell;
 mod state;
@@ -167,6 +169,7 @@ fn build_state(
         current_chat: Rc::new(RefCell::new(None)),
         chats: Rc::new(RefCell::new(Vec::new())),
         chat_avatars: Rc::new(RefCell::new(HashMap::new())),
+        sender_avatars: Rc::new(RefCell::new(sender_avatars::SenderAvatars::default())),
         chat_previews: Rc::new(RefCell::new(HashMap::new())),
         chat_unread_badges: Rc::new(RefCell::new(HashMap::new())),
         media_slots: Rc::new(RefCell::new(HashMap::new())),
@@ -988,6 +991,7 @@ fn send_current(state: &AppState) {
                     file_path: None,
                     duration_ms: None,
                     flex: None,
+                    album: None,
                 },
             );
             state.composer.set_text("");
@@ -1176,73 +1180,171 @@ fn extract_urls(text: &str) -> Vec<String> {
     out
 }
 
-/// Drag-and-drop files/images onto the conversation (chat + composer).
-fn wire_drop_attachments(state: &AppState) {
-    let drop = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
-    drop.set_types(&[
-        gdk::FileList::static_type(),
-        gio::File::static_type(),
-        gdk::Texture::static_type(),
-        String::static_type(),
-    ]);
-    let s = state.clone();
-    drop.connect_drop(move |_, value, _x, _y| {
-        if let Ok(uris) = value.get::<String>() {
-            let Some(chat) = s.current_chat.borrow().clone() else {
-                return false;
-            };
-            let mut any = false;
-            for uri in uris
-                .lines()
-                .map(str::trim)
-                .filter(|uri| !uri.is_empty() && !uri.starts_with('#'))
-            {
-                if let Some(path) = gio::File::for_uri(uri).path() {
-                    any |= stage_attachment(&s, &chat, path);
+#[derive(Clone)]
+enum AttachmentDrop {
+    Files(Vec<PathBuf>),
+    Image(gdk::Texture),
+}
+
+impl AttachmentDrop {
+    fn from_value(value: &glib::Value) -> Option<Self> {
+        if let Ok(texture) = value.get::<gdk::Texture>() {
+            return Some(Self::Image(texture));
+        }
+        let files = if let Ok(list) = value.get::<gdk::FileList>() {
+            list.files()
+        } else if let Ok(file) = value.get::<gio::File>() {
+            vec![file]
+        } else {
+            return None;
+        };
+        let paths: Vec<_> = files
+            .iter()
+            .filter_map(|file| file.path().filter(|path| path.is_file()))
+            .collect();
+        (!paths.is_empty()).then_some(Self::Files(paths))
+    }
+
+    fn stage(self, state: &AppState, chat: &str) -> bool {
+        match self {
+            Self::Files(paths) => {
+                let mut staged = false;
+                for path in paths {
+                    if stage_attachment(state, chat, path) {
+                        staged = true;
+                    }
                 }
+                staged
             }
-            return any;
-        }
-        if let Ok(list) = value.get::<gdk::FileList>() {
-            let mut any = false;
-            for file in list.files() {
-                if let Some(path) = file.path()
-                    && path.is_file()
-                {
-                    send_local_media_path(&s, path);
-                    any = true;
-                }
-            }
-            return any;
-        }
-        if let Ok(file) = value.get::<gio::File>() {
-            if let Some(path) = file.path()
-                && path.is_file()
-            {
-                send_local_media_path(&s, path);
-                return true;
-            }
-            return false;
-        }
-        if let Ok(tex) = value.get::<gdk::Texture>() {
-            match save_clipboard_texture_png(&s, &tex) {
+            Self::Image(texture) => match save_clipboard_texture_png(state, &texture) {
                 Ok(path) => {
-                    send_local_media_path(&s, path);
-                    true
+                    let staged = stage_attachment(state, chat, path.clone());
+                    let _ = std::fs::remove_file(path);
+                    staged
                 }
-                Err(e) => {
+                Err(error) => {
                     toast(
-                        &s,
-                        &crate::i18n::tf("media_send_failed", &[("error", &e.to_string())]),
+                        state,
+                        &crate::i18n::tf("media_send_failed", &[("error", &error.to_string())]),
                     );
                     false
                 }
-            }
-        } else {
-            false
+            },
         }
+    }
+}
+
+async fn read_attachment_drop(drop: &gdk::Drop) -> Option<AttachmentDrop> {
+    let formats = drop.formats().union_deserialize_types();
+
+    for kind in [
+        gdk::FileList::static_type(),
+        gio::File::static_type(),
+        gdk::Texture::static_type(),
+    ] {
+        if formats.contains_type(kind)
+            && let Ok(value) = drop.read_value_future(kind, glib::Priority::DEFAULT).await
+            && let Some(attachment) = AttachmentDrop::from_value(&value)
+        {
+            return Some(attachment);
+        }
+    }
+    None
+}
+
+type ActiveAttachmentDrop = Rc<RefCell<Option<(gdk::Drop, Option<AttachmentDrop>)>>>;
+
+fn wire_drop_attachments(state: &AppState) {
+    let formats = gdk::ContentFormats::builder()
+        .add_type(gdk::FileList::static_type())
+        .add_type(gio::File::static_type())
+        .add_type(gdk::Texture::static_type())
+        .build()
+        .union_deserialize_mime_types();
+    let target = gtk::DropTargetAsync::new(Some(formats), gdk::DragAction::COPY);
+    target.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let active: ActiveAttachmentDrop = Rc::new(RefCell::new(None));
+    let s = state.clone();
+    target.connect_accept(move |target, incoming| {
+        s.current_chat.borrow().is_some()
+            && target
+                .formats()
+                .is_some_and(|formats| formats.match_(&incoming.formats()))
     });
-    state.conversation.add_controller(drop);
+    let s = state.clone();
+    let hovering = active.clone();
+    target.connect_drag_enter(move |target, incoming, _, _| {
+        *hovering.borrow_mut() = Some((incoming.clone(), None));
+        let s = s.clone();
+        let hovering = hovering.clone();
+        let incoming = incoming.clone();
+        let target = target.clone();
+        let epoch = *s.attachment_epoch.borrow();
+        glib::MainContext::default().spawn_local(async move {
+            let attachment = read_attachment_drop(&incoming).await;
+            if hovering
+                .borrow()
+                .as_ref()
+                .is_none_or(|(drop, _)| drop != &incoming)
+            {
+                return;
+            }
+            if attachment.is_some()
+                && s.current_chat.borrow().is_some()
+                && *s.attachment_epoch.borrow() == epoch
+            {
+                *hovering.borrow_mut() = Some((incoming.clone(), attachment));
+                s.conversation.add_css_class("line-attachment-drop");
+                incoming.status(gdk::DragAction::COPY, gdk::DragAction::COPY);
+            } else {
+                s.conversation.remove_css_class("line-attachment-drop");
+                target.reject_drop(&incoming);
+            }
+        });
+        gdk::DragAction::COPY
+    });
+    target.connect_drag_motion(|_, _, _, _| gdk::DragAction::COPY);
+    let s = state.clone();
+    let hovering = active.clone();
+    target.connect_drag_leave(move |_, incoming| {
+        if hovering
+            .borrow()
+            .as_ref()
+            .is_some_and(|(drop, _)| drop == incoming)
+        {
+            hovering.borrow_mut().take();
+        }
+        s.conversation.remove_css_class("line-attachment-drop");
+    });
+    let s = state.clone();
+    target.connect_drop(move |_, incoming, _, _| {
+        s.conversation.remove_css_class("line-attachment-drop");
+        let Some(chat) = s.current_chat.borrow().clone() else {
+            return false;
+        };
+        let cached = active
+            .borrow_mut()
+            .take()
+            .and_then(|(drop, attachment)| (drop == *incoming).then_some(attachment).flatten());
+        let s = s.clone();
+        let incoming = incoming.clone();
+        let epoch = *s.attachment_epoch.borrow();
+        glib::MainContext::default().spawn_local(async move {
+            let attachment = match cached {
+                Some(attachment) => Some(attachment),
+                None => read_attachment_drop(&incoming).await,
+            };
+            let staged = *s.attachment_epoch.borrow() == epoch
+                && attachment.is_some_and(|attachment| attachment.stage(&s, &chat));
+            incoming.finish(if staged {
+                gdk::DragAction::COPY
+            } else {
+                gdk::DragAction::empty()
+            });
+        });
+        true
+    });
+    state.conversation.add_controller(target);
 }
 
 fn wire_actions(state: &AppState) {

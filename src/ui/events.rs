@@ -156,11 +156,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             handle_call_state(state, &peer, &call_state, error.as_deref());
         }
         ProtocolEvent::Message(msg) => {
-            let peer = if msg.mine {
-                msg.to.clone()
-            } else {
-                msg.from.clone()
-            };
+            let peer = msg.chat_mid().to_owned();
             let mut preview = format!(
                 "{}: {}",
                 if msg.mine {
@@ -178,7 +174,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 &ChatInfo {
                     mid: peer.clone(),
                     name: peer_display_name(state, &peer),
-                    kind: if peer.starts_with('c') {
+                    kind: if peer.starts_with(['c', 'r']) {
                         "group".into()
                     } else {
                         "dm".into()
@@ -262,6 +258,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             }
         }
         ProtocolEvent::AvatarReady { mid, avatar_path } => {
+            state.sender_avatars.borrow_mut().ready(&mid, &avatar_path);
             if state.self_mid.borrow().as_deref() == Some(mid.as_str()) {
                 *state.self_avatar_path.borrow_mut() = Some(avatar_path.clone());
                 if std::path::Path::new(&avatar_path).exists() {
@@ -503,6 +500,29 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 return;
             }
             if !ok {
+                match pending.as_ref() {
+                    Some(Pending::AlbumPage(ui)) => {
+                        albums::page_failed(ui, error.as_deref().unwrap_or("Album unavailable"));
+                        return;
+                    }
+                    Some(Pending::AlbumPhoto {
+                        ui,
+                        photo,
+                        picture,
+                        button,
+                    }) => {
+                        albums::photo_failed(
+                            state,
+                            ui,
+                            photo,
+                            picture,
+                            button,
+                            error.as_deref().unwrap_or("Photo unavailable"),
+                        );
+                        return;
+                    }
+                    _ => {}
+                }
                 if matches!(pending, Some(Pending::Login)) && *state.restarting.borrow() {
                     return;
                 }
@@ -558,6 +578,13 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 return;
             }
             match pending {
+                Some(Pending::AlbumPage(ui)) => albums::page_ready(state, &ui, result),
+                Some(Pending::AlbumPhoto {
+                    ui,
+                    photo,
+                    picture,
+                    button,
+                }) => albums::photo_ready(state, &ui, &photo, &picture, &button, &result),
                 Some(Pending::Login) => on_logged_in(state, &result),
                 Some(Pending::ListChats) => {
                     let chats: Vec<ChatInfo> = result

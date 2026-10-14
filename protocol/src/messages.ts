@@ -1,3 +1,9 @@
+export function messageChatMid(message: Record<string, unknown>): string {
+  const to = String(message.to ?? "");
+  if (to.startsWith("c") || to.startsWith("r")) return to;
+  return message.mine ? to : String(message.from ?? "");
+}
+
 export function isVisualType(contentType: string): boolean {
   return contentType === "IMAGE" || contentType === "VIDEO" ||
     contentType === "STICKER";

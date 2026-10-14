@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn build_file_actions(state: &AppState, msg: &MessageInfo) -> gtk::Box {
+pub(super) fn build_media_actions(state: &AppState, msg: &MessageInfo) -> gtk::Box {
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     actions.add_css_class("line-file-actions");
     for (label, action) in [("file_save", "file_save"), ("file_save_as", "file_save_as")] {
@@ -146,12 +146,25 @@ pub(super) fn open_share_picker(state: &AppState, msg: &MessageInfo) {
     window.present();
 }
 
-pub(super) fn send_shared_file(state: &AppState, chat_mid: &str, path: &str, name: &str) {
+pub(super) fn send_shared_media(
+    state: &AppState,
+    chat_mid: &str,
+    path: &str,
+    name: &str,
+    content_type: &str,
+) {
     if !*state.session_ready.borrow() {
         toast(state, &crate::i18n::t("still_restoring"));
         return;
     }
-    match state.sidecar.share_file(chat_mid, path, name) {
+    let request = if content_type.eq_ignore_ascii_case("IMAGE") {
+        state
+            .sidecar
+            .send_media_named(chat_mid, path, "image", None, name)
+    } else {
+        state.sidecar.share_file(chat_mid, path, name)
+    };
+    match request {
         Ok(id) => {
             state.pending.borrow_mut().insert(
                 id,

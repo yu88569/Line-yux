@@ -1,10 +1,12 @@
 # Generated
 /target
+protocol/line-gtk-protocol
 **/*.rs.bk
 
 # Local session / secrets
 /data
 protocol/linejs-storage.json
+.audit/
 
 # OS
 .DS_Store

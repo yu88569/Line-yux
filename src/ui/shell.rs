@@ -678,6 +678,9 @@ pub fn load_css() {
               ),
               @window_bg_color;
         }
+        .line-conversation.line-attachment-drop {
+            box-shadow: inset 0 0 0 3px @accent_bg_color;
+        }
         .line-chat-bar {
             background: transparent;
             border-bottom: 1px solid alpha(@borders, 0.35);

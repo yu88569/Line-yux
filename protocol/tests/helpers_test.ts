@@ -1,6 +1,26 @@
 import { assertEquals } from "@std/assert";
 import { picturePathOf, profileUrl } from "../src/contacts.ts";
-import { coerceI64, isMediaType, normalizeRaw } from "../src/messages.ts";
+import {
+  coerceI64,
+  isMediaType,
+  messageChatMid,
+  normalizeRaw,
+} from "../src/messages.ts";
+
+Deno.test("message chat identity keeps groups and rooms separate from their senders", () => {
+  for (const to of ["c-group", "r-room"]) {
+    assertEquals(messageChatMid({ from: "u-member", to, mine: false }), to);
+    assertEquals(messageChatMid({ from: "u-self", to, mine: true }), to);
+  }
+  assertEquals(
+    messageChatMid({ from: "u-member", to: "u-self", mine: false }),
+    "u-member",
+  );
+  assertEquals(
+    messageChatMid({ from: "u-self", to: "u-member", mine: true }),
+    "u-member",
+  );
+});
 
 Deno.test("message normalization supplies metadata", () => {
   assertEquals(normalizeRaw({ text: "hello" }), {

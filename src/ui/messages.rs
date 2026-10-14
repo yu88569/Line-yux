@@ -2,7 +2,15 @@ use super::*;
 
 pub(super) fn message_list_fingerprint(messages: &[MessageInfo]) -> (usize, String, String) {
     let first = messages.first().map(|m| m.id.clone()).unwrap_or_default();
-    let last = messages.last().map(|m| m.id.clone()).unwrap_or_default();
+    let mut last = messages.last().map(|m| m.id.clone()).unwrap_or_default();
+    for message in messages {
+        if let Some(album) = &message.album {
+            last.push_str(&format!(
+                "|{}:{}:{}:{}",
+                message.id, album.chat_mid, album.album_id, album.title
+            ));
+        }
+    }
     (messages.len(), first, last)
 }
 
@@ -192,7 +200,9 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         .map(|p| std::path::Path::new(p).exists())
         .unwrap_or(false);
 
-    if let Some(flex) = msg.flex.as_ref() {
+    if let Some(album) = msg.album.as_ref() {
+        albums::append_album_card(state, &bubble, album);
+    } else if let Some(flex) = msg.flex.as_ref() {
         append_flex_card(state, &bubble, msg, flex);
     } else if is_audio {
         append_voice_card(state, &bubble, msg, has_audio);
@@ -272,6 +282,10 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         }
     }
 
+    if is_image && !is_sticker {
+        bubble.append(&file_actions::build_media_actions(state, msg));
+    }
+
     if !msg.id.is_empty() && message_tracks_media(msg) {
         state
             .media_slots
@@ -341,6 +355,7 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             .valign(gtk::Align::End)
             .css_classes(["line-msg-time"])
             .build();
+        outer.append(&super::sender_avatars::sender_avatar(state, &msg.from));
         outer.append(&bubble);
         outer.append(&time);
         outer.append(&gtk::Box::builder().hexpand(true).build());
@@ -736,7 +751,7 @@ pub(super) fn append_file_card(state: &AppState, bubble: &gtk::Box, msg: &Messag
         request_media_download(&s, &opened_msg, action);
     });
     bubble.append(&row);
-    bubble.append(&file_actions::build_file_actions(state, msg));
+    bubble.append(&file_actions::build_media_actions(state, msg));
 }
 
 pub(super) fn format_voice_duration(ms: u64) -> String {
@@ -970,6 +985,7 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
         file_path: Some(path.to_string()),
         duration_ms,
         flex: None,
+        album: None,
     };
     append_voice_card(state, &bubble, &msg, true);
 }
@@ -1199,6 +1215,7 @@ pub(super) fn append_link_chips(_state: &AppState, bubble: &gtk::Box, text: &str
 pub(super) fn clear_messages(state: &AppState) {
     stop_voice_playback(state);
     state.message_list.clear();
+    state.sender_avatars.borrow_mut().clear_rows();
     state.media_slots.borrow_mut().clear();
     state.media_msgs.borrow_mut().clear();
     state.receipt_slots.borrow_mut().clear();
@@ -1487,5 +1504,21 @@ pub(super) fn jump_to_latest(state: &AppState) {
     if let Some(mid) = state.current_chat.borrow().clone() {
         mark_chat_read(state, &mid);
         clear_unread_badge(state, &mid);
+    }
+}
+
+#[cfg(test)]
+mod album_refresh_tests {
+    use super::*;
+    #[test]
+    fn refreshed_album_metadata_changes_the_message_list_fingerprint() {
+        let old: MessageInfo =
+            serde_json::from_value(serde_json::json!({"id":"42","contentType":"POSTNOTIFICATION"}))
+                .unwrap();
+        let new: MessageInfo = serde_json::from_value(serde_json::json!({"id":"42","contentType":"POSTNOTIFICATION","album":{"chatMid":"c11111111111111111111111111111111","albumId":"5333564955743123169","title":"Test album"}})).unwrap();
+        assert_ne!(
+            message_list_fingerprint(&[old]),
+            message_list_fingerprint(&[new])
+        );
     }
 }

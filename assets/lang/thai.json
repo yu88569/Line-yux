@@ -376,5 +376,11 @@
   "attachment_remove": "นำไฟล์แนบออก",
   "attachment_sending": "กำลังส่ง…",
   "attachment_retry": "ส่งไม่สำเร็จ กดส่งเพื่อลองอีกครั้ง",
-  "attachment_image_queue": "แนบรูปในช่องข้อความ แล้วกดส่ง"
+  "attachment_image_queue": "แนบรูปในช่องข้อความ แล้วกดส่ง",
+  "album_open": "เปิดอัลบั้ม",
+  "album_loading": "กำลังโหลดอัลบั้ม…",
+  "album_more": "โหลดเพิ่มเติม",
+  "album_retry": "ลองอีกครั้ง",
+  "album_empty": "อัลบั้มนี้ไม่มีรูปภาพ",
+  "album_photo_open": "เปิดรูปภาพ"
 }

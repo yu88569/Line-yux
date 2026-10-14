@@ -1,3 +1,4 @@
+import { needsAlbumMetadataRefresh } from "./albums.ts";
 import {
   type Client,
   loginWithAuthToken,
@@ -503,7 +504,8 @@ export function createCommandService(runtime: CommandRuntime) {
       const cached = msgCache.get(chatMid);
       if (
         !force && cached && Date.now() - cached.at < cachePolicy().memMsg &&
-        !needsFileMetadataRefresh(cached.messages)
+        !needsFileMetadataRefresh(cached.messages) &&
+        !needsAlbumMetadataRefresh(cached.messages)
       ) {
         const ui = await forUiMessages(cached.messages);
         ok(id, { messages: ui, cached: true });

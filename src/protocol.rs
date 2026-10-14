@@ -76,6 +76,31 @@ pub struct FlexInfo {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct AlbumRef {
+    #[serde(rename = "chatMid")]
+    pub chat_mid: String,
+    #[serde(rename = "albumId")]
+    pub album_id: String,
+    pub title: String,
+}
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AlbumMediaKind {
+    Image,
+    Video,
+}
+#[derive(Debug, Clone, Deserialize)]
+pub struct AlbumPhoto {
+    pub oid: String,
+    pub kind: AlbumMediaKind,
+}
+#[derive(Debug, Clone, Deserialize)]
+pub struct AlbumPage {
+    pub photos: Vec<AlbumPhoto>,
+    #[serde(rename = "nextCursor")]
+    pub next_cursor: Option<String>,
+}
+#[derive(Debug, Clone, Deserialize)]
 pub struct MessageInfo {
     #[serde(default)]
     pub id: String,
@@ -105,6 +130,18 @@ pub struct MessageInfo {
     pub duration_ms: Option<i64>,
     #[serde(default)]
     pub flex: Option<FlexInfo>,
+    #[serde(default)]
+    pub album: Option<Box<AlbumRef>>,
+}
+
+impl MessageInfo {
+    pub fn chat_mid(&self) -> &str {
+        if self.mine || self.to.starts_with(['c', 'r']) {
+            &self.to
+        } else {
+            &self.from
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -235,6 +272,24 @@ mod tests {
         assert!(message.image_path.is_none());
         assert!(message.file_name.is_none());
         assert!(message.file_size.is_none());
+    }
+
+    #[test]
+    fn message_routes_to_its_conversation() {
+        for (from, to, mine, expected) in [
+            ("u-peer", "u-self", false, "u-peer"),
+            ("u-self", "u-peer", true, "u-peer"),
+            ("u-member", "c-group", false, "c-group"),
+            ("u-self", "c-group", true, "c-group"),
+            ("u-member", "r-room", false, "r-room"),
+            ("u-self", "r-room", true, "r-room"),
+        ] {
+            let message: MessageInfo = serde_json::from_value(serde_json::json!({
+                "from": from, "to": to, "mine": mine,
+            }))
+            .unwrap();
+            assert_eq!(message.chat_mid(), expected, "{from} -> {to}, mine={mine}");
+        }
     }
 
     #[test]

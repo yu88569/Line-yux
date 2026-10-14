@@ -236,15 +236,16 @@ pub(super) fn confirm_attachments(state: &AppState, chat: &str) {
                         file_path: Some(path),
                         duration_ms: item.duration_ms.map(|v| v as i64),
                         flex: None,
+                        album: None,
                     },
                 );
                 show_upload_progress(state, 0.02, &crate::i18n::t("media_uploading"));
             }
             Err(error) => {
-                if let Some(items) = state.attachment_drafts.borrow_mut().get_mut(chat) {
-                    if let Some(draft) = items.iter_mut().find(|draft| draft.id == item.id) {
-                        draft.status = DraftStatus::Failed;
-                    }
+                if let Some(items) = state.attachment_drafts.borrow_mut().get_mut(chat)
+                    && let Some(draft) = items.iter_mut().find(|draft| draft.id == item.id)
+                {
+                    draft.status = DraftStatus::Failed;
                 }
                 toast(state, &error.to_string());
             }

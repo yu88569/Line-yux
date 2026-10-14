@@ -65,6 +65,7 @@ pub(super) struct AppState {
     pub msg_idle: gtk::Label,
     pub current_chat: Rc<RefCell<Option<String>>>,
     pub chats: Rc<RefCell<Vec<ChatInfo>>>,
+    pub sender_avatars: Rc<RefCell<super::sender_avatars::SenderAvatars>>,
     pub chat_avatars: Rc<RefCell<HashMap<String, gtk::Picture>>>,
     pub chat_previews: Rc<RefCell<HashMap<String, gtk::Label>>>,
     pub chat_unread_badges: Rc<RefCell<HashMap<String, gtk::Label>>>,
@@ -162,6 +163,13 @@ pub(super) enum PendingMediaAction {
 }
 
 pub(super) enum Pending {
+    AlbumPage(super::albums::AlbumGallery),
+    AlbumPhoto {
+        ui: super::albums::AlbumGallery,
+        photo: crate::protocol::AlbumPhoto,
+        picture: gtk::Picture,
+        button: gtk::Button,
+    },
     Login,
     ListChats,
     ListFriends,

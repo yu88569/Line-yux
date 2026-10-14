@@ -10,7 +10,7 @@ import { atomicWriteJson, ensurePrivateDir } from "./storage.ts";
 import { AuthStore, LineDevice } from "./auth.ts";
 import { CachePolicy, policyFor } from "./cache_policy.ts";
 import { picturePathOf, profileUrl } from "./contacts.ts";
-import { coerceI64, normalizeRaw } from "./messages.ts";
+import { coerceI64, messageChatMid, normalizeRaw } from "./messages.ts";
 import {
   attachmentName,
   FILE_METADATA_VERSION,
@@ -20,9 +20,16 @@ import * as calls from "./calls.ts";
 import { createOutgoingMedia } from "./outgoing_media.ts";
 import { createMediaCache } from "./media_cache.ts";
 import { createStickerService } from "./stickers.ts";
+import { resolveSenderAvatar } from "./sender_avatar.ts";
 import { createCommandService } from "./commands.ts";
 import { createListener } from "./listener.ts";
 import { createMessageView } from "./message_view.ts";
+
+import {
+  ALBUM_METADATA_VERSION,
+  albumService,
+  extractAlbum,
+} from "./albums.ts";
 
 type Json = Record<string, unknown>;
 
@@ -952,6 +959,10 @@ async function summarizeTalkMessage(
     stickerId: stkId || null,
     stickerPackageId: stkPkg || null,
     flex,
+    album: extractAlbum(meta),
+    albumMetadataVersion: contentType === "POSTNOTIFICATION"
+      ? ALBUM_METADATA_VERSION
+      : null,
     durationMs: meta.DURATION ? Number(meta.DURATION) : null,
     needsMedia: (contentType === "IMAGE" || contentType === "VIDEO" ||
         contentType === "STICKER")
@@ -1006,6 +1017,10 @@ async function summarizeRawMessage(
       stickerId: meta.STKID || null,
       stickerPackageId: meta.STKPKGID || null,
       flex: contentType === "FLEX" ? extractFlex(meta) : null,
+      album: extractAlbum(meta),
+      albumMetadataVersion: contentType === "POSTNOTIFICATION"
+        ? ALBUM_METADATA_VERSION
+        : null,
       durationMs: meta.DURATION ? Number(meta.DURATION) : null,
       needsMedia: contentType === "IMAGE" || contentType === "VIDEO" ||
         contentType === "STICKER" || contentType === "AUDIO",
@@ -1427,7 +1442,7 @@ async function resolveContactInfo(mid: string): Promise<{
     return cached ?? {
       name: mid,
       picturePath: null,
-      kind: mid.startsWith("c") ? "group" : "dm",
+      kind: mid.startsWith("c") || mid.startsWith("r") ? "group" : "dm",
       muted: false,
     };
   }
@@ -1437,7 +1452,11 @@ async function resolveContactInfo(mid: string): Promise<{
     const info = {
       name: c.displayName || mid,
       picturePath: c.picturePath ?? null,
-      kind: /BOT/i.test(type) ? "bot" : mid.startsWith("c") ? "group" : "dm",
+      kind: /BOT/i.test(type)
+        ? "bot"
+        : mid.startsWith("c") || mid.startsWith("r")
+        ? "group"
+        : "dm",
       muted: !!(c as { notificationDisabled?: boolean }).notificationDisabled,
     };
     contactIndex.set(mid, info);
@@ -1447,14 +1466,14 @@ async function resolveContactInfo(mid: string): Promise<{
     return cached ?? {
       name: mid,
       picturePath: null,
-      kind: mid.startsWith("c") ? "group" : "dm",
+      kind: mid.startsWith("c") || mid.startsWith("r") ? "group" : "dm",
       muted: false,
     };
   }
 }
 
 async function upsertChatFromMessage(message: Json) {
-  const peer = message.mine ? String(message.to) : String(message.from);
+  const peer = messageChatMid(message);
   if (!peer) return;
   const preview = previewLine(message);
   const activity = Number(message.createdTime ?? 0);
@@ -1696,6 +1715,18 @@ async function handle(req: Json) {
 
   try {
     switch (method) {
+      case "resolve_sender_avatar": {
+        const avatarPath = await resolveSenderAvatar(params.senderMid, {
+          existingPath: (mid) => existingFile(join(avatarDir, `${mid}.jpg`)),
+          resolveContact: resolveContactInfo,
+          avatarPathFor,
+          dedupe,
+          emitReady: (mid, avatarPath) =>
+            emitEvent("avatar_ready", { mid, avatarPath }),
+        });
+        ok(id, { avatarPath });
+        break;
+      }
       case "ping":
         ok(id, { pong: true, version: "0.2.0" });
         break;
@@ -1724,6 +1755,64 @@ async function handle(req: Json) {
           !!params.force,
         );
         break;
+      case "list_album_photos": {
+        if (!client) throw new Error("not_logged_in");
+        const album = extractAlbum({
+          serviceType: "AB",
+          cafeId: params.albumId,
+          chatId: params.chatMid,
+        });
+        if (!album) throw new Error("Invalid album reference");
+        ok(
+          id,
+          await albumService(client.base).photos(
+            album,
+            typeof params.cursor === "string" ? params.cursor : "",
+          ),
+        );
+        break;
+      }
+      case "download_album_photo": {
+        if (!client) throw new Error("not_logged_in");
+        const album = extractAlbum({
+          serviceType: "AB",
+          cafeId: params.albumId,
+          chatId: params.chatMid,
+        });
+        if (
+          !album || typeof params.oid !== "string" ||
+          !/^[a-zA-Z0-9._-]+$/.test(params.oid) ||
+          (params.kind !== "image" && params.kind !== "video")
+        ) throw new Error("Invalid album photo");
+        const path = join(
+          mediaDir,
+          `album-${album.albumId}-${params.oid}.${
+            params.kind === "video" ? "mp4" : "jpg"
+          }`,
+        );
+        try {
+          if ((await Deno.stat(path)).size > 0) {
+            ok(id, { path });
+            break;
+          }
+        } catch { /* Download cache miss. */ }
+        const bytes = await albumService(client.base).download(album, {
+          oid: params.oid,
+          kind: params.kind,
+        });
+        if (!bytes.length) throw new Error("Album photo is empty");
+        const temporary = `${path}.${crypto.randomUUID()}.tmp`;
+        try {
+          await Deno.writeFile(temporary, bytes, { mode: 0o600 });
+          await Deno.rename(temporary, path);
+        } finally {
+          try {
+            await Deno.remove(temporary);
+          } catch { /* Already renamed. */ }
+        }
+        ok(id, { path });
+        break;
+      }
       case "send_message":
         await commands.sendMessage(
           id,

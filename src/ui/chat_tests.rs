@@ -194,6 +194,79 @@ fn gtk_menu_actions_mutate_real_state_and_show_status_icons() {
     *state.restored_last_chat.borrow_mut() = true;
     state.stack.set_visible_child_name("shell");
     state.window.set_default_size(1000, 700);
+    apply_chats(
+        &state,
+        vec![chat("u-selected", 100), chat("c-target", 10)],
+        false,
+    );
+    let incoming: MessageInfo = serde_json::from_value(serde_json::json!({
+        "id": "group-message", "from": "u-member", "to": "c-target",
+        "mine": false, "text": "group hello", "createdTime": 200,
+    }))
+    .unwrap();
+    handle_event(&state, ProtocolEvent::Message(incoming));
+    assert_eq!(
+        state.chats.borrow()[0].mid,
+        "c-target",
+        "incoming group message promotes the group instead of the member"
+    );
+    assert_eq!(state.chats.borrow().len(), 2, "no member DM is created");
+    assert_eq!(state.chats.borrow()[0].unread, 8);
+    assert!(
+        state.chat_previews.borrow()["c-target"]
+            .text()
+            .contains("group hello")
+    );
+    assert_eq!(state.chats.borrow()[1].unread, 7);
+    state.current_chat.borrow_mut().replace("c-target".into());
+    for (id, from, mine, text) in [
+        ("group-message-open", "u-member", false, "open group hello"),
+        ("group-message-own", "u-self", true, "own group hello"),
+    ] {
+        let message: MessageInfo = serde_json::from_value(serde_json::json!({
+            "id": id, "from": from, "to": "c-target", "mine": mine,
+            "text": text, "createdTime": 201,
+        }))
+        .unwrap();
+        handle_event(&state, ProtocolEvent::Message(message));
+        assert!(state.seen_msg_ids.borrow().contains(id));
+        let model = state.message_list.widget().model().unwrap();
+        assert!(
+            (0..model.n_items()).any(|index| {
+                let item = model
+                    .item(index)
+                    .and_downcast::<glib::BoxedAnyObject>()
+                    .unwrap();
+                descendants(&item.borrow::<gtk::Widget>())
+                    .into_iter()
+                    .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
+                    .any(|label| label.text() == text)
+            }),
+            "open group renders the incoming or own message text"
+        );
+        assert_eq!(state.chats.borrow()[0].mid, "c-target");
+        assert_eq!(
+            state.chats.borrow().len(),
+            2,
+            "no member or own DM is created"
+        );
+        assert!(
+            state.chat_previews.borrow()["c-target"]
+                .text()
+                .contains(text)
+        );
+    }
+    state.current_chat.borrow_mut().take();
+    let room_message: MessageInfo = serde_json::from_value(serde_json::json!({
+        "id": "room-message", "from": "u-member", "to": "r-room",
+        "mine": false, "text": "room hello", "createdTime": 202,
+    }))
+    .unwrap();
+    handle_event(&state, ProtocolEvent::Message(room_message));
+    assert_eq!(state.chats.borrow()[0].mid, "r-room");
+    assert_eq!(state.chats.borrow()[0].kind, "group");
+    assert_eq!(state.chats.borrow()[0].unread, 1);
+    assert_eq!(state.chats.borrow().len(), 3);
     let activation_count = Rc::new(std::cell::Cell::new(0));
     let count = activation_count.clone();
     state
@@ -343,4 +416,313 @@ fn gtk_menu_actions_mutate_real_state_and_show_status_icons() {
     }
     drain();
     std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+#[ignore = "requires a GTK display"]
+fn gtk_incoming_sender_avatars_cache_late_updates_and_cleanup() {
+    libadwaita::init().unwrap();
+    gtk::Settings::default()
+        .unwrap()
+        .set_gtk_enable_animations(false);
+    let temp = std::env::temp_dir().join(format!("line-gtk-avatar-fixture-{}", std::process::id()));
+    std::fs::create_dir_all(temp.join("protocol")).unwrap();
+    let fake_protocol = temp.join("protocol/line-gtk-protocol");
+    std::fs::write(&fake_protocol, "#!/bin/sh\nexit 0\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake_protocol, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let data = temp.join("data");
+    let config = AppConfig {
+        animations: false,
+        tray_enabled: false,
+        close_to_tray: false,
+        notifications: false,
+        auto_mark_read: false,
+        language: "en".into(),
+        ..AppConfig::default()
+    };
+    config.save(&data);
+    let app = Application::builder()
+        .application_id("dev.linegtk.MessageAvatarFixture")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let sidecar = Rc::new(Sidecar::spawn(&temp, &data).unwrap());
+    let (state, _) = build_state(
+        &app,
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        data.clone(),
+        sidecar,
+    );
+
+    *state.session_ready.borrow_mut() = true;
+    *state.restored_last_chat.borrow_mut() = true;
+    state.stack.set_visible_child_name("shell");
+    state.msg_stack.set_visible_child_name("list");
+    state.window.set_default_size(820, 650);
+    state.chat_title.set_text("Avatar fixture");
+    *state.current_chat.borrow_mut() = Some("c-fixture".into());
+    let first = format!("u{}", "1".repeat(32));
+    let second = format!("u{}", "2".repeat(32));
+    let third = format!("u{}", "3".repeat(32));
+    let cache = data.join("cache/avatars");
+    std::fs::create_dir_all(&cache).unwrap();
+    let first_path = cache.join(format!("{first}.jpg"));
+    let second_path = cache.join(format!("{second}.jpg"));
+    image::RgbImage::from_pixel(80, 80, image::Rgb([219, 94, 67]))
+        .save(&first_path)
+        .unwrap();
+    image::RgbImage::from_pixel(80, 80, image::Rgb([44, 139, 164]))
+        .save(&second_path)
+        .unwrap();
+    let message = |id: &str, sender: &str, mine: bool, text: &str| -> MessageInfo {
+        serde_json::from_value(
+            serde_json::json!({"id":id,"from":sender,"to":"c-fixture","mine":mine,"text":text}),
+        )
+        .unwrap()
+    };
+    append_message(
+        &state,
+        &message("first", &first, false, "Hello from the first sender"),
+        false,
+    );
+    append_message(
+        &state,
+        &message("second", &second, false, "Hello from a different sender"),
+        false,
+    );
+    append_message(
+        &state,
+        &message("mine", &first, true, "My reply has no avatar"),
+        false,
+    );
+    append_message(
+        &state,
+        &message(
+            "late-one",
+            &third,
+            false,
+            "A photo arriving after history loads",
+        ),
+        false,
+    );
+    append_message(
+        &state,
+        &message("late-two", &third, false, "The same sender in another row"),
+        false,
+    );
+    let row_at = |index| {
+        let item = state
+            .message_list
+            .widget()
+            .model()
+            .unwrap()
+            .item(index)
+            .unwrap()
+            .downcast::<glib::BoxedAnyObject>()
+            .unwrap();
+        item.borrow::<gtk::Widget>().clone()
+    };
+    let avatar_at = |index| -> Option<gtk::Picture> {
+        descendants(&row_at(index))
+            .into_iter()
+            .find(|w| w.has_css_class("line-message-avatar"))
+            .and_then(|w| {
+                descendants(&w)
+                    .into_iter()
+                    .find_map(|w| w.downcast::<gtk::Picture>().ok())
+            })
+    };
+    let a = avatar_at(0).unwrap();
+    let b = avatar_at(1).unwrap();
+    assert!(
+        avatar_at(2).is_none(),
+        "outgoing rows keep their original layout"
+    );
+    let late_one = avatar_at(3).unwrap();
+    let late_two = avatar_at(4).unwrap();
+    wait_for(|| a.paintable().is_some() && b.paintable().is_some());
+    let pixels = |picture: &gtk::Picture| {
+        let texture = picture
+            .paintable()
+            .unwrap()
+            .downcast::<gdk::Texture>()
+            .unwrap();
+        let mut bytes = vec![0; texture.width() as usize * texture.height() as usize * 4];
+        texture.download(&mut bytes, texture.width() as usize * 4);
+        bytes
+    };
+    assert_ne!(
+        pixels(&a),
+        pixels(&b),
+        "different senders display their own cached photos"
+    );
+    assert!(late_one.paintable().is_none());
+    handle_event(
+        &state,
+        ProtocolEvent::AvatarReady {
+            mid: third.clone(),
+            avatar_path: second_path.to_string_lossy().into_owned(),
+        },
+    );
+    wait_for(|| late_one.paintable().is_some() && late_two.paintable().is_some());
+    assert_eq!(pixels(&late_one), pixels(&b));
+    assert_eq!(pixels(&late_two), pixels(&b));
+    state.window.present();
+    wait_for(|| a.is_mapped() && state.conversation.width() > 100);
+    let frame = Rc::new(std::cell::Cell::new(false));
+    let ready = frame.clone();
+    state.window.add_tick_callback(move |_, _| {
+        ready.set(true);
+        glib::ControlFlow::Break
+    });
+    wait_for(|| frame.get());
+    let paintable = gtk::WidgetPaintable::new(Some(&state.conversation));
+    let snapshot = gtk::Snapshot::new();
+    paintable.snapshot(
+        &snapshot,
+        state.conversation.width() as f64,
+        state.conversation.height() as f64,
+    );
+    let node = snapshot.to_node().unwrap();
+    state
+        .window
+        .renderer()
+        .unwrap()
+        .render_texture(&node, None)
+        .save_to_png("/tmp/line-gtk-message-avatars.png")
+        .unwrap();
+    append_message(
+        &state,
+        &message(
+            "long-incoming",
+            &first,
+            false,
+            "A longer incoming message should wrap within this narrow conversation while its sender profile picture stays aligned with the top of the bubble.",
+        ),
+        false,
+    );
+    state.sidebar_paned.set_end_child(None::<&gtk::Widget>);
+    let narrow = gtk::Window::builder()
+        .application(&app)
+        .transient_for(&state.window)
+        .modal(true)
+        .default_width(600)
+        .default_height(720)
+        .title("Avatar narrow fixture")
+        .build();
+    narrow.set_child(Some(&state.conversation));
+    narrow.present();
+    wait_for(|| state.conversation.width() >= 540 && state.conversation.width() <= 650);
+    let long_row = row_at(5);
+    let avatar_frame = descendants(&long_row)
+        .into_iter()
+        .find(|w| w.has_css_class("line-message-avatar"))
+        .unwrap();
+    let bubble = descendants(&long_row)
+        .into_iter()
+        .find(|w| w.has_css_class("line-bubble-in"))
+        .unwrap();
+    wait_for(|| long_row.is_mapped() && bubble.height() > 40);
+    let avatar_bounds = avatar_frame.compute_bounds(&long_row).unwrap();
+    let bubble_bounds = bubble.compute_bounds(&long_row).unwrap();
+    assert!(
+        (avatar_bounds.y() - bubble_bounds.y()).abs() < 1.0,
+        "avatar stays top aligned beside wrapped text: avatar={avatar_bounds:?}, bubble={bubble_bounds:?}"
+    );
+    assert!(
+        bubble_bounds.x() + bubble_bounds.width() <= state.conversation.width() as f32,
+        "wrapped bubble fits narrow conversation"
+    );
+    let frame = Rc::new(std::cell::Cell::new(false));
+    let ready = frame.clone();
+    narrow.add_tick_callback(move |_, _| {
+        ready.set(true);
+        glib::ControlFlow::Break
+    });
+    wait_for(|| frame.get());
+    let paintable = gtk::WidgetPaintable::new(Some(&state.conversation));
+    let snapshot = gtk::Snapshot::new();
+    paintable.snapshot(
+        &snapshot,
+        state.conversation.width() as f64,
+        state.conversation.height() as f64,
+    );
+    let node = snapshot.to_node().unwrap();
+    narrow
+        .renderer()
+        .unwrap()
+        .render_texture(&node, None)
+        .save_to_png("/tmp/line-gtk-message-avatars-narrow.png")
+        .unwrap();
+    narrow.set_child(None::<&gtk::Widget>);
+    narrow.destroy();
+    drop(narrow);
+    state.sidebar_paned.set_end_child(Some(&state.conversation));
+    drop(long_row);
+    drop(avatar_frame);
+    drop(bubble);
+    let old_weak = a.downgrade();
+    drop(a);
+    clear_messages(&state);
+    drain();
+    wait_for(|| old_weak.upgrade().is_none());
+    *state.current_chat.borrow_mut() = Some("c-other".into());
+    append_message(
+        &state,
+        &message("new-chat", &second, false, "New conversation"),
+        false,
+    );
+    let fresh = avatar_at(0).unwrap();
+    wait_for(|| fresh.paintable().is_some());
+    let before = pixels(&fresh);
+    handle_event(
+        &state,
+        ProtocolEvent::AvatarReady {
+            mid: first,
+            avatar_path: second_path.to_string_lossy().into_owned(),
+        },
+    );
+    drain();
+    assert_eq!(
+        pixels(&fresh),
+        before,
+        "old sender event cannot change another chat sender"
+    );
+    append_message(
+        &state,
+        &message("remembered", &third, false, "Remembered sender avatar"),
+        false,
+    );
+    let remembered = avatar_at(1).unwrap();
+    wait_for(|| remembered.paintable().is_some());
+    assert_eq!(
+        pixels(&remembered),
+        before,
+        "ready paths survive row rebuilds"
+    );
+    append_message(
+        &state,
+        &message(
+            "invalid-sender",
+            first_path.with_extension("").to_str().unwrap(),
+            false,
+            "Invalid sender keeps fallback",
+        ),
+        false,
+    );
+    let invalid = avatar_at(2).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+    while std::time::Instant::now() < deadline {
+        drain();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        invalid.paintable().is_none(),
+        "untrusted sender paths cannot be loaded as avatars"
+    );
+    state.window.close();
+    clear_messages(&state);
+    drain();
+    let _ = std::fs::remove_dir_all(temp);
 }
