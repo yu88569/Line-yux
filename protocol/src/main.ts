@@ -11,6 +11,11 @@ import { AuthStore, LineDevice } from "./auth.ts";
 import { CachePolicy, policyFor } from "./cache_policy.ts";
 import { picturePathOf, profileUrl } from "./contacts.ts";
 import { coerceI64, normalizeRaw } from "./messages.ts";
+import {
+  attachmentName,
+  FILE_METADATA_VERSION,
+  resolveFileMetadata,
+} from "./file_metadata.ts";
 import * as calls from "./calls.ts";
 import { createOutgoingMedia } from "./outgoing_media.ts";
 import { createMediaCache } from "./media_cache.ts";
@@ -254,6 +259,19 @@ const outgoingMedia = createOutgoingMedia({
   isMineFrom,
   normType,
   getCachedMessages: (chatMid) => msgCache.get(chatMid)?.messages,
+  updateDownloadedFile: async (chatMid, messageId, file) => {
+    const messages = msgCache.get(chatMid)?.messages ??
+      await loadDiskMessages(chatMid);
+    const message = messages?.find((m) => String(m.id) === messageId);
+    if (!messages || !message || normType(message.contentType) !== "FILE") {
+      return;
+    }
+    Object.assign(message, file);
+    message.fileMetadataVersion = FILE_METADATA_VERSION;
+    if (file.fileName) message.text = file.fileName;
+    msgCache.set(chatMid, { at: Date.now(), messages });
+    await saveDiskMessages(chatMid, messages);
+  },
   invalidateMessages: (chatMid) => msgCache.delete(chatMid),
   invalidateChats: () => {
     chatCache = null;
@@ -450,7 +468,7 @@ async function refetchMessageData(
   chatMid: string,
   messageId: string,
   opts: { allowNonImage?: boolean } = {},
-): Promise<{ buf: Uint8Array; mime: string } | null> {
+): Promise<{ buf: Uint8Array; mime: string; fileName: string | null } | null> {
   if (!client) return null;
   let cursor = boxCursor.get(chatMid);
   if (!cursor) {
@@ -484,7 +502,20 @@ async function refetchMessageData(
     const blob = await tm.getData(false);
     const buf = new Uint8Array(await blob.arrayBuffer());
     if (!opts.allowNonImage && !isImageBytes(buf)) return null;
-    return { buf, mime: blob.type || "application/octet-stream" };
+    const metadata = normType(raw.contentType) === "FILE"
+      ? await resolveFileMetadata({
+        metadata: raw.contentMetadata ?? {},
+        text: raw.text,
+        chunks: raw.chunks,
+        decryptEnvelope: () => client!.base.e2ee.decryptE2EEDataMessage(raw),
+      })
+      : { fileName: null };
+    return {
+      buf,
+      mime: blob.type || "application/octet-stream",
+      fileName: attachmentName(blob instanceof File ? blob.name : null) ||
+        metadata.fileName,
+    };
   } catch (e) {
     console.error("[refetchMessageData]", messageId, e);
     return null;
@@ -720,6 +751,7 @@ async function summarizeTalkMessage(
     createdTime?: number | string | bigint;
     contentType?: string | number;
     contentMetadata?: Record<string, string>;
+    chunks?: unknown[];
   };
   const contentType = normType(raw.contentType);
   const meta = raw.contentMetadata ?? {};
@@ -801,6 +833,7 @@ async function summarizeTalkMessage(
   }
 
   let fileName: string | null = meta.FILE_NAME || meta.FILENAME || null;
+  let fileSize: number | null = null;
   let filePath: string | null = null;
 
   if (contentType === "IMAGE") {
@@ -863,8 +896,15 @@ async function summarizeTalkMessage(
       }
     }
   } else if (contentType === "FILE") {
-    text = text || fileName || "[File]";
-    fileName = fileName || text;
+    const metadata = await resolveFileMetadata({
+      metadata: meta,
+      text,
+      chunks: raw.chunks,
+      decryptEnvelope: () => client!.base.e2ee.decryptE2EEDataMessage(tm.raw),
+    });
+    fileName = metadata.fileName;
+    fileSize = metadata.fileSize;
+    text = fileName || "[File]";
     if (withMedia) {
       try {
         for await (const ent of Deno.readDir(mediaDir)) {
@@ -906,6 +946,8 @@ async function summarizeTalkMessage(
     imageUrl,
     audioPath: null,
     fileName,
+    fileSize,
+    fileMetadataVersion: contentType === "FILE" ? FILE_METADATA_VERSION : null,
     filePath,
     stickerId: stkId || null,
     stickerPackageId: stkPkg || null,
@@ -953,7 +995,13 @@ async function summarizeRawMessage(
       imagePath: null,
       imageUrl: meta.PREVIEW_URL || meta.DOWNLOAD_URL || null,
       audioPath: null,
-      fileName: meta.FILE_NAME || meta.FILENAME || null,
+      fileName: attachmentName(meta.FILE_NAME) ||
+        attachmentName(meta.FILENAME) ||
+        (contentType === "FILE" ? attachmentName(r.text) : null),
+      fileSize: null,
+      fileMetadataVersion: contentType === "FILE"
+        ? FILE_METADATA_VERSION
+        : null,
       filePath: null,
       stickerId: meta.STKID || null,
       stickerPackageId: meta.STKPKGID || null,
@@ -1698,6 +1746,7 @@ async function handle(req: Json) {
           String(params.filePath ?? ""),
           typeof params.oType === "string" ? params.oType : "auto",
           params.durationMs != null ? Number(params.durationMs) : undefined,
+          typeof params.fileName === "string" ? params.fileName : undefined,
         );
         break;
       case "download_media":

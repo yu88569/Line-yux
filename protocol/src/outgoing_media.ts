@@ -1,6 +1,7 @@
 import type { Client } from "@evex/linejs";
 import { join } from "@std/path";
 import { Buffer } from "node:buffer";
+import { attachmentName } from "./file_metadata.ts";
 
 type Json = Record<string, unknown>;
 
@@ -23,7 +24,9 @@ export type OutgoingMediaRuntime = {
     chatMid: string,
     messageId: string,
     opts?: { allowNonImage?: boolean },
-  ) => Promise<{ buf: Uint8Array; mime: string } | null>;
+  ) => Promise<
+    { buf: Uint8Array; mime: string; fileName: string | null } | null
+  >;
   uiMediaPath: (id: string, path: string) => Promise<string | null>;
   isPreviewOrThumbImage: (path: string) => Promise<boolean>;
   getBoxCursor: (
@@ -34,6 +37,11 @@ export type OutgoingMediaRuntime = {
   isMineFrom: (from: unknown) => boolean;
   normType: (value: unknown) => string;
   getCachedMessages: (chatMid: string) => Json[] | undefined;
+  updateDownloadedFile: (chatMid: string, messageId: string, file: {
+    fileName: string | null;
+    fileSize: number;
+    filePath: string;
+  }) => Promise<void>;
   invalidateMessages: (chatMid: string) => void;
   invalidateChats: () => void;
   sentMessagePayload: (
@@ -412,6 +420,7 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
     filePath: string,
     oTypeRaw?: string,
     durationMs?: number,
+    fileName?: string,
   ) {
     const client = runtime.getClient();
     if (!client) {
@@ -433,7 +442,11 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
     try {
       report(0.02, "Reading file…");
       const data = await Deno.readFile(filePath);
-      if (data.length < 32) {
+      const name =
+        (attachmentName(fileName) || filePath.split("/").pop() || "file.bin")
+          .replace(/[\\/]/g, "_");
+      const oType = normalizeMediaOType(oTypeRaw ?? "auto", name);
+      if (data.length < 32 && oType !== "file") {
         fail(id, "file_too_small");
         emitEvent("upload_progress", {
           chatMid,
@@ -443,8 +456,6 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
         });
         return;
       }
-      const name = filePath.split("/").pop() || "file.bin";
-      const oType = normalizeMediaOType(oTypeRaw ?? "auto", name);
       if (oType === "audio" && data.length < 1024) {
         fail(id, "audio_file_too_small");
         emitEvent("upload_progress", {
@@ -596,6 +607,7 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
         imagePath: cached.imagePath,
         audioPath: cached.audioPath,
         fileName: name,
+        fileSize: data.length,
         filePath: cached.filePath || filePath,
         durationMs: dur ?? null,
         needsMedia: !cached.imagePath &&
@@ -697,9 +709,10 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
         );
         if (cached) {
           hintCt = normType(cached.contentType);
-          if (typeof cached.fileName === "string") fileName = cached.fileName;
-          else if (hintCt === "FILE" && typeof cached.text === "string") {
-            fileName = cached.text;
+          if (typeof cached.fileName === "string") {
+            fileName = attachmentName(cached.fileName);
+          } else if (hintCt === "FILE" && typeof cached.text === "string") {
+            fileName = attachmentName(cached.text);
           }
         }
       } catch { /* ignore */ }
@@ -720,10 +733,16 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
         mediaDest(messageId, "bin"),
       ];
       if (fileName) {
-        localCandidates.unshift(join(mediaDir, `${messageId}.${fileName}`));
+        localCandidates.unshift(
+          join(mediaDir, `${messageId}.${fileName.replace(/[\/\\]/g, "_")}`),
+        );
       }
       for (const p of localCandidates) {
-        const hit = await existingFile(p);
+        const hit = hintCt === "FILE"
+          ? await Deno.stat(p).then((st) => st.isFile ? p : null).catch(() =>
+            null
+          )
+          : await existingFile(p);
         if (!hit) continue;
         // Never return UI thumbnails as the download/viewer payload.
         if (hit.includes(".thumb.")) continue;
@@ -739,7 +758,15 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
             // Skip polluted preview files that were cached into mediaDest.
             if (await isPreviewOrThumbImage(hit)) continue;
           }
-          if (st.size >= 256) {
+          if (
+            (hintCt === "FILE" && fileName) ||
+            (hintCt !== "FILE" && st.size >= 256)
+          ) {
+            await runtime.updateDownloadedFile(chatMid, messageId, {
+              fileName,
+              fileSize: st.size,
+              filePath: hit,
+            });
             ok(id, {
               path: hit,
               fileName: fileName || hit.split("/").pop() || messageId,
@@ -755,10 +782,11 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
       const got = await refetchMessageData(chatMid, messageId, {
         allowNonImage: true,
       });
-      if (!got || got.buf.length < 32) {
+      if (!got || (hintCt !== "FILE" && got.buf.length < 32)) {
         fail(id, "download_failed");
         return;
       }
+      fileName = attachmentName(got.fileName) || fileName;
       let dest: string;
       if (hintCt === "IMAGE" && isImageBytes(got.buf)) {
         const written = await writeFullImage(messageId, got.buf, got.mime);
@@ -780,6 +808,11 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
           await extractVideoThumb(dest, messageId);
         }
       }
+      await runtime.updateDownloadedFile(chatMid, messageId, {
+        fileName,
+        fileSize: got.buf.length,
+        filePath: dest,
+      });
       ok(id, {
         path: dest,
         fileName: fileName || dest.split("/").pop() || messageId,

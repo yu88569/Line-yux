@@ -1,4 +1,5 @@
 import { isMediaType } from "./messages.ts";
+import { attachmentName } from "./file_metadata.ts";
 import { join } from "@std/path";
 
 type Json = Record<string, unknown>;
@@ -34,7 +35,10 @@ export function createMessageView(runtime: MessageViewRuntime) {
     if (ct === "VIDEO") return L.video;
     if (ct === "STICKER") return L.sticker;
     if (ct === "AUDIO") return L.voice;
-    if (ct === "FILE") return L.file;
+    if (ct === "FILE") {
+      const name = attachmentName(msg.fileName);
+      return name ? `${L.file}: ${name}` : L.file;
+    }
     if (ct === "FLEX") return text || L.flex;
     if (!text) return ct !== "NONE" ? ct.toLowerCase() : L.message;
     return text.length > 64 ? `${text.slice(0, 63)}…` : text;

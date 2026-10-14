@@ -304,18 +304,15 @@ impl Sidecar {
         self.request("send_audio", Some(params))
     }
 
-    pub fn send_media(
+    pub fn send_media_named(
         &self,
         chat_mid: &str,
         file_path: &str,
         o_type: &str,
         duration_ms: Option<u64>,
+        file_name: &str,
     ) -> Result<u64> {
-        let mut params = json!({
-            "chatMid": chat_mid,
-            "filePath": file_path,
-            "oType": o_type,
-        });
+        let mut params = json!({"chatMid": chat_mid, "filePath": file_path, "oType": o_type, "fileName": file_name});
         if let Some(ms) = duration_ms {
             params["durationMs"] = json!(ms);
         }
@@ -326,6 +323,18 @@ impl Sidecar {
         self.request(
             "download_media",
             Some(json!({ "chatMid": chat_mid, "messageId": message_id })),
+        )
+    }
+
+    pub fn share_file(&self, chat_mid: &str, file_path: &str, file_name: &str) -> Result<u64> {
+        self.request(
+            "send_media",
+            Some(json!({
+                "chatMid": chat_mid,
+                "filePath": file_path,
+                "fileName": file_name,
+                "oType": "file",
+            })),
         )
     }
 

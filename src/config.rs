@@ -400,6 +400,33 @@ mod tests {
         }
         fs::remove_dir_all(dir).expect("remove test directory");
     }
+
+    #[test]
+    fn default_file_download_folder_persists_and_resets_to_downloads() {
+        let dir =
+            std::env::temp_dir().join(format!("line-file-folder-test-{}", std::process::id()));
+        let mut cfg = AppConfig::default();
+        assert_eq!(
+            cfg.download_dir_for("FILE"),
+            AppConfig::system_downloads_dir()
+        );
+        let chosen = dir.join("custom files");
+        cfg.set_download_dir_for("FILE", chosen.to_string_lossy().into_owned());
+        cfg.save_atomic(&dir).unwrap();
+        let mut restored = AppConfig::load(&dir);
+        assert_eq!(restored.download_dir_for("FILE"), chosen);
+        assert_eq!(
+            restored.download_dir_for("IMAGE"),
+            AppConfig::system_downloads_dir()
+        );
+        restored.set_download_dir_for("FILE", String::new());
+        restored.save_atomic(&dir).unwrap();
+        assert_eq!(
+            AppConfig::load(&dir).download_dir_for("FILE"),
+            AppConfig::system_downloads_dir()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 pub fn apply_theme(theme: &str) {

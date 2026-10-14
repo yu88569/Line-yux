@@ -636,6 +636,7 @@ pub(super) fn set_chat_hidden(state: &AppState, mid: &str, hidden: bool) {
     if hidden && state.current_chat.borrow().as_deref() == Some(mid) {
         finish_voice_record(state, false);
         *state.current_chat.borrow_mut() = None;
+        refresh_attachment_drafts(state);
         state.chat_list.unselect_all();
         state.chat_title.set_text("");
         state.chat_subtitle.set_text("");

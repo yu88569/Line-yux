@@ -35,6 +35,13 @@ pub(super) struct AppState {
     pub chat_list: gtk::ListBox,
     pub message_list: virtual_list::VirtualMessageList,
     pub message_scroll: gtk::ScrolledWindow,
+    pub attachment_strip: gtk::Box,
+    pub attachment_scroll: gtk::ScrolledWindow,
+    pub attachment_drafts:
+        Rc<RefCell<HashMap<String, Vec<super::attachment_drafts::DraftAttachment>>>>,
+    pub attachment_requests: Rc<RefCell<HashMap<u64, (String, u64)>>>,
+    pub next_attachment_id: Rc<RefCell<u64>>,
+    pub attachment_epoch: Rc<RefCell<u64>>,
     pub composer: gtk::Entry,
     pub composer_row: gtk::Box,
     pub conversation: gtk::Box,
@@ -146,6 +153,14 @@ pub(super) struct PendingNotif {
 }
 
 #[derive(Debug, Clone)]
+pub(super) enum PendingMediaAction {
+    ViewOrSave(String),
+    ShareFile {
+        chat_mid: String,
+        source_chat_mid: String,
+    },
+}
+
 pub(super) enum Pending {
     Login,
     ListChats,
@@ -158,9 +173,12 @@ pub(super) enum Pending {
         placeholder_id: String,
     },
     ListStickers,
+    ShareFile {
+        chat_mid: String,
+    },
     DownloadMedia {
         message_id: String,
-        action: String,
+        action: PendingMediaAction,
         content_type: String,
         suggest_name: String,
     },

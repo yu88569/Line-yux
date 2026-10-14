@@ -691,40 +691,21 @@ pub(super) fn stop_voice_playback(state: &AppState) {
     pb.dur.set_text(&pb.total_label);
 }
 
-pub(super) fn append_file_card(state: &AppState, bubble: &gtk::Box, msg: &MessageInfo) {
-    let name = msg
-        .file_name
-        .clone()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            if msg.text.is_empty() || msg.text == "[File]" {
-                crate::i18n::t("preview_file")
-            } else {
-                msg.text.clone()
-            }
-        });
-    let kind = viewer_kind_for("FILE", "", &name);
-    let icon_name = match kind {
-        ViewerKind::Pdf => "application-pdf-symbolic",
-        ViewerKind::Text => "text-x-generic-symbolic",
-        ViewerKind::Image => "image-x-generic-symbolic",
-        ViewerKind::Video => "video-x-generic-symbolic",
-        ViewerKind::Audio => "audio-x-generic-symbolic",
-        ViewerKind::Generic => "folder-download-symbolic",
-    };
+pub(super) fn build_file_card(msg: &MessageInfo) -> (gtk::Button, &'static str) {
+    let file = FilePresentation::from_message(msg);
     let row = gtk::Button::builder()
         .css_classes(["flat", "line-file-card"])
-        .tooltip_text(crate::i18n::t("media_open_file"))
+        .tooltip_text(&file.name)
         .halign(gtk::Align::Fill)
         .build();
     let inner = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(10)
         .build();
-    let icon = gtk::Image::from_icon_name(icon_name);
+    let icon = gtk::Image::from_icon_name(file.icon);
     icon.set_pixel_size(22);
     let label = gtk::Label::builder()
-        .label(&name)
+        .label(&file.name)
         .xalign(0.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .max_width_chars(28)
@@ -733,15 +714,29 @@ pub(super) fn append_file_card(state: &AppState, bubble: &gtk::Box, msg: &Messag
         .build();
     let chevron = gtk::Image::from_icon_name("go-next-symbolic");
     inner.append(&icon);
-    inner.append(&label);
+    let labels = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    let detail = gtk::Label::builder()
+        .label(&file.detail)
+        .xalign(0.0)
+        .css_classes(["dim-label", "caption"])
+        .build();
+    labels.append(&label);
+    labels.append(&detail);
+    inner.append(&labels);
     inner.append(&chevron);
     row.set_child(Some(&inner));
+    (row, file.action)
+}
+
+pub(super) fn append_file_card(state: &AppState, bubble: &gtk::Box, msg: &MessageInfo) {
+    let (row, action) = build_file_card(msg);
     let s = state.clone();
-    let msg = msg.clone();
+    let opened_msg = msg.clone();
     row.connect_clicked(move |_| {
-        request_media_download(&s, &msg, "open_viewer");
+        request_media_download(&s, &opened_msg, action);
     });
     bubble.append(&row);
+    bubble.append(&file_actions::build_file_actions(state, msg));
 }
 
 pub(super) fn format_voice_duration(ms: u64) -> String {
@@ -971,6 +966,7 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
         image_path: None,
         audio_path: Some(path.to_string()),
         file_name: None,
+        file_size: None,
         file_path: Some(path.to_string()),
         duration_ms,
         flex: None,

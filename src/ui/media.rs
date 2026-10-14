@@ -1,17 +1,147 @@
 use super::*;
 
+pub(super) fn meaningful_file_name(name: &str) -> Option<&str> {
+    let name = name.trim();
+    if name.is_empty() || name.eq_ignore_ascii_case("[File]") {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+pub(super) fn original_file_name(msg: &MessageInfo) -> Option<String> {
+    msg.file_name
+        .as_deref()
+        .and_then(meaningful_file_name)
+        .or_else(|| meaningful_file_name(&msg.text))
+        .map(str::to_string)
+        .or_else(|| {
+            let name = std::path::Path::new(msg.file_path.as_deref()?)
+                .file_name()?
+                .to_str()?;
+            if msg.id.is_empty() {
+                return None;
+            }
+            let suffix = name.strip_prefix(&msg.id)?;
+            let original = suffix
+                .strip_prefix('.')
+                .or_else(|| suffix.strip_prefix('_'))?;
+            meaningful_file_name(original)
+                .filter(|name| std::path::Path::new(name).extension().is_some())
+                .map(str::to_string)
+        })
+}
+
 pub(super) fn suggest_media_name(msg: &MessageInfo) -> String {
-    if let Some(n) = msg.file_name.as_deref().filter(|s| !s.is_empty()) {
+    if msg.content_type.eq_ignore_ascii_case("FILE") {
+        return original_file_name(msg).unwrap_or_else(|| {
+            let extension = msg
+                .file_path
+                .as_deref()
+                .and_then(|path| std::path::Path::new(path).extension())
+                .and_then(|extension| extension.to_str())
+                .map(|extension| format!(".{extension}"))
+                .unwrap_or_default();
+            format!("line-{}{extension}", msg.id)
+        });
+    }
+    if let Some(n) = msg.file_name.as_deref().and_then(meaningful_file_name) {
         return n.to_string();
     }
-    let ct = msg.content_type.to_ascii_uppercase();
-    match ct.as_str() {
+    match msg.content_type.to_ascii_uppercase().as_str() {
         "IMAGE" => format!("{}.jpg", msg.id),
         "VIDEO" => format!("{}.mp4", msg.id),
         "AUDIO" => format!("{}.m4a", msg.id),
-        "FILE" if !msg.text.is_empty() && msg.text != "[File]" => msg.text.clone(),
         _ => format!("line-{}", msg.id),
     }
+}
+
+pub(super) struct FilePresentation {
+    pub name: String,
+    pub detail: String,
+    pub icon: &'static str,
+    pub action: &'static str,
+}
+
+impl FilePresentation {
+    pub fn from_message(msg: &MessageInfo) -> Self {
+        let original = original_file_name(msg);
+        let extension = original
+            .as_deref()
+            .map(file_extension)
+            .filter(|e| !e.is_empty())
+            .unwrap_or_else(|| file_extension(msg.file_path.as_deref().unwrap_or("")));
+        let name = original.unwrap_or_else(|| crate::i18n::t("file_name_unknown"));
+        let (label, icon) = match extension.as_str() {
+            "doc" | "docx" | "docm" | "dot" | "dotx" | "dotm" | "odt" | "ott" | "rtf" => {
+                ("Word", "x-office-document-symbolic")
+            }
+            "xls" | "xlsx" | "xlsm" | "xlsb" | "xlt" | "xltx" | "xltm" | "ods" | "ots" => {
+                ("Excel", "x-office-spreadsheet-symbolic")
+            }
+            "ppt" | "pptx" | "pptm" | "pps" | "ppsx" | "ppsm" | "pot" | "potx" | "potm" | "odp"
+            | "otp" => ("PowerPoint", "x-office-presentation-symbolic"),
+            "pdf" => ("PDF", "application-pdf-symbolic"),
+            "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "cab" => {
+                ("Archive", "package-x-generic-symbolic")
+            }
+            _ => match viewer_kind_for("FILE", msg.file_path.as_deref().unwrap_or(""), &name) {
+                ViewerKind::Image => ("Image", "image-x-generic-symbolic"),
+                ViewerKind::Video => ("Video", "video-x-generic-symbolic"),
+                ViewerKind::Audio => ("Audio", "audio-x-generic-symbolic"),
+                ViewerKind::Text => ("Text", "text-x-generic-symbolic"),
+                _ => ("", "text-x-generic-symbolic"),
+            },
+        };
+        let localized = match label {
+            "Archive" => crate::i18n::t("file_type_archive"),
+            "Image" => crate::i18n::t("file_type_image"),
+            "Video" => crate::i18n::t("file_type_video"),
+            "Audio" => crate::i18n::t("file_type_audio"),
+            "Text" => crate::i18n::t("file_type_text"),
+            _ => label.to_string(),
+        };
+        let mut detail = if label.is_empty() {
+            if extension.is_empty() {
+                crate::i18n::t("file_type_unknown")
+            } else {
+                extension.to_ascii_uppercase()
+            }
+        } else if extension.is_empty() || label.eq_ignore_ascii_case(&extension) {
+            localized
+        } else {
+            format!("{localized} · {}", extension.to_ascii_uppercase())
+        };
+        let size = msg.file_size.or_else(|| {
+            std::fs::metadata(msg.file_path.as_deref()?)
+                .ok()
+                .map(|m| m.len())
+        });
+        if let Some(size) = size {
+            detail.push_str(&format!(" · {}", format_bytes(size)));
+        }
+        let action = if viewer_kind_for("FILE", msg.file_path.as_deref().unwrap_or(""), &name)
+            == ViewerKind::Generic
+        {
+            "open_external"
+        } else {
+            "open_viewer"
+        };
+        Self {
+            name,
+            detail,
+            icon,
+            action,
+        }
+    }
+}
+
+fn file_extension(name: &str) -> String {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
 }
 
 pub(super) fn is_thumb_media_path(path: &str) -> bool {
@@ -131,7 +261,25 @@ pub(super) fn local_media_path(msg: &MessageInfo, for_viewer: bool) -> Option<St
 }
 
 pub(super) fn request_media_download(state: &AppState, msg: &MessageInfo, action: &str) {
-    let Some(chat_mid) = state.current_chat.borrow().clone() else {
+    request_media_action(
+        state,
+        msg,
+        PendingMediaAction::ViewOrSave(action.to_string()),
+    );
+}
+
+pub(super) fn request_media_action(
+    state: &AppState,
+    msg: &MessageInfo,
+    action: PendingMediaAction,
+) {
+    let source_chat = match &action {
+        PendingMediaAction::ShareFile {
+            source_chat_mid, ..
+        } => Some(source_chat_mid.clone()),
+        PendingMediaAction::ViewOrSave(_) => state.current_chat.borrow().clone(),
+    };
+    let Some(chat_mid) = source_chat else {
         toast(state, &crate::i18n::t("select_chat_first"));
         return;
     };
@@ -146,15 +294,20 @@ pub(super) fn request_media_download(state: &AppState, msg: &MessageInfo, action
         .get(&msg.id)
         .cloned()
         .unwrap_or_else(|| msg.clone());
-    let for_viewer = action == "open_viewer";
+    let for_viewer =
+        matches!(&action, PendingMediaAction::ViewOrSave(value) if value == "open_viewer");
     if let Some(path) = local_media_path(&msg, for_viewer) {
-        finish_media_action(
+        finish_downloaded_media_action(
             state,
-            action,
+            &action,
             &path,
             &suggest_media_name(&msg),
             &msg.content_type,
         );
+        return;
+    }
+    if !*state.session_ready.borrow() {
+        toast(state, &crate::i18n::t("still_restoring"));
         return;
     }
     state.status.set_text(&crate::i18n::t("media_downloading"));
@@ -164,7 +317,7 @@ pub(super) fn request_media_download(state: &AppState, msg: &MessageInfo, action
                 id,
                 Pending::DownloadMedia {
                     message_id: msg.id.clone(),
-                    action: action.to_string(),
+                    action,
                     content_type: msg.content_type.clone(),
                     suggest_name: suggest_media_name(&msg),
                 },
@@ -177,6 +330,23 @@ pub(super) fn request_media_download(state: &AppState, msg: &MessageInfo, action
     }
 }
 
+pub(super) fn finish_downloaded_media_action(
+    state: &AppState,
+    action: &PendingMediaAction,
+    path: &str,
+    suggest_name: &str,
+    content_type: &str,
+) {
+    match action {
+        PendingMediaAction::ViewOrSave(action) => {
+            finish_media_action(state, action, path, suggest_name, content_type)
+        }
+        PendingMediaAction::ShareFile { chat_mid, .. } => {
+            file_actions::send_shared_file(state, chat_mid, path, suggest_name)
+        }
+    }
+}
+
 pub(super) fn finish_media_action(
     state: &AppState,
     action: &str,
@@ -184,9 +354,32 @@ pub(super) fn finish_media_action(
     suggest_name: &str,
     content_type: &str,
 ) {
+    let action = if content_type.eq_ignore_ascii_case("FILE")
+        && matches!(action, "open_viewer" | "open_external")
+    {
+        if viewer_kind_for("FILE", path, suggest_name) == ViewerKind::Generic {
+            "open_external"
+        } else {
+            "open_viewer"
+        }
+    } else {
+        action
+    };
     match action {
         "open_viewer" => open_media_viewer(state, path, content_type, suggest_name),
+        "open_external" => match prepare_external_attachment(&state.data_dir, path, suggest_name) {
+            Ok(prepared) => open_path_externally(&prepared.to_string_lossy()),
+            Err(error) => toast(
+                state,
+                &crate::i18n::tf(
+                    "media_download_failed_err",
+                    &[("error", &error.to_string())],
+                ),
+            ),
+        },
         "save_dialog" => save_media_as(state, path, suggest_name, content_type),
+        "file_save" => save_media_to_default(state, path, suggest_name, "FILE"),
+        "file_save_as" => show_media_save_dialog(state, path, suggest_name, "FILE"),
         "play_audio" => {
             if let Err(e) = play_audio_file(path, &state.config.borrow().audio_output) {
                 toast(
@@ -216,8 +409,20 @@ pub(super) fn copy_media_to_dest(state: &AppState, src: &str, dest: &std::path::
 }
 
 pub(super) fn save_media_as(state: &AppState, path: &str, suggest_name: &str, content_type: &str) {
-    let cfg = state.config.borrow().clone();
-    let dest_dir = cfg.download_dir_for(content_type);
+    if state.config.borrow().download_ask_every_time {
+        show_media_save_dialog(state, path, suggest_name, content_type);
+    } else {
+        save_media_to_default(state, path, suggest_name, content_type);
+    }
+}
+
+pub(super) fn save_media_to_default(
+    state: &AppState,
+    path: &str,
+    suggest_name: &str,
+    content_type: &str,
+) {
+    let dest_dir = state.config.borrow().download_dir_for(content_type);
     if let Err(e) = std::fs::create_dir_all(&dest_dir) {
         toast(
             state,
@@ -225,12 +430,22 @@ pub(super) fn save_media_as(state: &AppState, path: &str, suggest_name: &str, co
         );
         return;
     }
+    let dest = downloads::unique_download_dest(&dest_dir, suggest_name);
+    copy_media_to_dest(state, path, &dest);
+}
 
-    if !cfg.download_ask_every_time {
-        let dest = downloads::unique_download_dest(&dest_dir, suggest_name);
-        copy_media_to_dest(state, path, &dest);
-        return;
-    }
+pub(super) fn show_media_save_dialog(
+    state: &AppState,
+    path: &str,
+    suggest_name: &str,
+    content_type: &str,
+) {
+    let configured = state.config.borrow().download_dir_for(content_type);
+    let dest_dir = if configured.is_dir() {
+        configured
+    } else {
+        AppConfig::default().download_dir_for(content_type)
+    };
 
     let filter = gtk::FileFilter::new();
     filter.set_name(Some("All files"));
@@ -240,7 +455,7 @@ pub(super) fn save_media_as(state: &AppState, path: &str, suggest_name: &str, co
     let dialog = gtk::FileDialog::builder()
         .title(crate::i18n::t("media_save_as"))
         .modal(true)
-        .initial_name(suggest_name)
+        .initial_name(downloads::sanitize_filename(suggest_name))
         .filters(&filters)
         .default_filter(&filter)
         .build();
@@ -420,66 +635,59 @@ pub(super) enum ViewerKind {
 
 pub(super) fn viewer_kind_for(content_type: &str, path: &str, name: &str) -> ViewerKind {
     let ct = content_type.to_ascii_uppercase();
-    let lower = format!(
-        "{} {}",
-        path.to_ascii_lowercase(),
-        name.to_ascii_lowercase()
-    );
-    if ct == "VIDEO"
-        || lower.contains(".mp4")
-        || lower.contains(".webm")
-        || lower.contains(".mkv")
-        || lower.contains(".mov")
-        || lower.contains(".m4v")
-    {
+    let extension = file_extension(name);
+    let extension = if extension.is_empty() {
+        file_extension(path)
+    } else {
+        extension
+    };
+    if ct == "VIDEO" || matches!(extension.as_str(), "mp4" | "webm" | "mkv" | "mov" | "m4v") {
         return ViewerKind::Video;
     }
     if ct == "IMAGE"
-        || lower.contains(".jpg")
-        || lower.contains(".jpeg")
-        || lower.contains(".png")
-        || lower.contains(".webp")
-        || lower.contains(".gif")
-        || lower.contains(".bmp")
+        || matches!(
+            extension.as_str(),
+            "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp"
+        )
     {
         return ViewerKind::Image;
     }
     if ct == "AUDIO"
-        || lower.contains(".m4a")
-        || lower.contains(".mp3")
-        || lower.contains(".aac")
-        || lower.contains(".ogg")
-        || lower.contains(".wav")
-        || lower.contains(".flac")
+        || matches!(
+            extension.as_str(),
+            "m4a" | "mp3" | "aac" | "ogg" | "wav" | "flac"
+        )
     {
         return ViewerKind::Audio;
     }
-    if lower.contains(".pdf") {
+    if extension == "pdf" {
         return ViewerKind::Pdf;
     }
-    if lower.contains(".txt")
-        || lower.contains(".md")
-        || lower.contains(".log")
-        || lower.contains(".json")
-        || lower.contains(".csv")
-        || lower.contains(".xml")
-        || lower.contains(".yaml")
-        || lower.contains(".yml")
-        || lower.contains(".toml")
-        || lower.contains(".rs")
-        || lower.contains(".py")
-        || lower.contains(".js")
-        || lower.contains(".ts")
-        || lower.contains(".css")
-        || lower.contains(".html")
-        || lower.contains(".c")
-        || lower.contains(".h")
-        || lower.contains(".go")
-    {
+    if matches!(
+        extension.as_str(),
+        "txt"
+            | "md"
+            | "log"
+            | "json"
+            | "csv"
+            | "xml"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "rs"
+            | "py"
+            | "js"
+            | "ts"
+            | "css"
+            | "html"
+            | "c"
+            | "h"
+            | "go"
+    ) {
         return ViewerKind::Text;
     }
     // Sniff text files without extension.
-    if (ct == "FILE" || ct.is_empty()) && looks_like_text_file(path) {
+    if extension.is_empty() && (ct == "FILE" || ct.is_empty()) && looks_like_text_file(path) {
         return ViewerKind::Text;
     }
     ViewerKind::Generic
@@ -524,8 +732,41 @@ pub(super) fn format_bytes(n: u64) -> String {
     }
 }
 
+pub(super) fn prepare_external_attachment(
+    data_dir: &std::path::Path,
+    path: &str,
+    name: &str,
+) -> std::io::Result<PathBuf> {
+    let source = std::path::Path::new(path);
+    let extension = meaningful_file_name(name)
+        .map(file_extension)
+        .unwrap_or_default();
+    if extension.is_empty() || extension == file_extension(path) {
+        return Ok(source.to_path_buf());
+    }
+    let basename = source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("attachment");
+    let directory = data_dir
+        .join("cache/media")
+        .join(format!("{}.open", downloads::sanitize_filename(basename)));
+    std::fs::create_dir_all(&directory)?;
+    let destination = downloads::unique_download_dest(&directory, name);
+    let mut input = std::fs::File::open(source)?;
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)?;
+    if let Err(error) = std::io::copy(&mut input, &mut output) {
+        let _ = std::fs::remove_file(&destination);
+        return Err(error);
+    }
+    Ok(destination)
+}
+
 pub(super) fn open_path_externally(path: &str) {
-    let uri = format!("file://{}", path);
+    let uri = gio::File::for_path(path).uri();
     if gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>).is_ok() {
         return;
     }
@@ -554,6 +795,41 @@ pub(super) fn append_gpu_video_viewer(body: &gtk::Box, path: &str) {
 
     body.append(&offload);
     stream.play();
+}
+
+fn render_image_viewport(
+    source: &gdk_pixbuf::Pixbuf,
+    dest: &gdk_pixbuf::Pixbuf,
+    offset: (f64, f64),
+    zoom: f64,
+    interp: gdk_pixbuf::InterpType,
+) {
+    dest.fill(0);
+    // GdkPixbuf rounds offsets and extends edge pixels outside the source image.
+    let ox = (offset.0 + 0.5).floor();
+    let oy = (offset.1 + 0.5).floor();
+    let left = ox.clamp(0.0, dest.width() as f64) as i32;
+    let top = oy.clamp(0.0, dest.height() as f64) as i32;
+    let right = (ox + source.width() as f64 * zoom)
+        .ceil()
+        .clamp(0.0, dest.width() as f64) as i32;
+    let bottom = (oy + source.height() as f64 * zoom)
+        .ceil()
+        .clamp(0.0, dest.height() as f64) as i32;
+    if right > left && bottom > top {
+        source.scale(
+            dest,
+            left,
+            top,
+            right - left,
+            bottom - top,
+            ox,
+            oy,
+            zoom,
+            zoom,
+            interp,
+        );
+    }
 }
 
 pub(super) fn append_image_viewer(
@@ -636,7 +912,7 @@ pub(super) fn append_image_viewer(
         .build();
     let send_btn = gtk::Button::builder()
         .icon_name("mail-send-symbolic")
-        .tooltip_text(crate::i18n::t("media_draw_send"))
+        .tooltip_text(crate::i18n::t("attachment_image_queue"))
         .css_classes(["flat", "circular", "suggested-action"])
         .build();
     bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
@@ -667,6 +943,53 @@ pub(super) fn append_image_viewer(
     bar.append(&undo_btn);
     bar.append(&clear_btn);
     bar.append(&send_btn);
+    let copy_btn = gtk::Button::builder()
+        .icon_name("edit-copy-symbolic")
+        .tooltip_text(crate::i18n::t("media_copy_image"))
+        .css_classes(["flat", "circular"])
+        .build();
+    bar.append(&copy_btn);
+    let copy_image = {
+        let s = state.clone();
+        let clipboard = win.clipboard();
+        let pixbuf = pixbuf.clone();
+        let strokes = strokes.clone();
+        let active_stroke = active_stroke.clone();
+        Rc::new(move || {
+            let packed: Vec<_> = strokes
+                .borrow()
+                .iter()
+                .chain(active_stroke.borrow().iter())
+                .map(|stroke| (stroke.color, stroke.width, stroke.points.clone()))
+                .collect();
+            match image_clipboard_texture(&pixbuf, &packed) {
+                Ok(texture) => {
+                    clipboard.set_texture(&texture);
+                    toast(&s, &crate::i18n::t("media_image_copied"));
+                }
+                Err(error) => toast(
+                    &s,
+                    &crate::i18n::tf("media_image_copy_failed", &[("error", &error.to_string())]),
+                ),
+            }
+        })
+    };
+    {
+        let copy_image = copy_image.clone();
+        copy_btn.connect_clicked(move |_| copy_image());
+    }
+    let copy_keys = gtk::EventControllerKey::new();
+    copy_keys.connect_key_pressed(move |_, key, _, modifiers| {
+        if modifiers.contains(gdk::ModifierType::CONTROL_MASK)
+            && !modifiers.intersects(gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK)
+            && matches!(key, gdk::Key::c | gdk::Key::C)
+        {
+            copy_image();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    win.add_controller(copy_keys);
 
     let area = gtk::DrawingArea::builder()
         .hexpand(true)
@@ -713,9 +1036,7 @@ pub(super) fn append_image_viewer(
                     );
                 }
                 if let Some(dest) = slot.as_ref() {
-                    // Transparent edges so the themed DrawingArea background shows through.
-                    dest.fill(0);
-                    pixbuf.scale(dest, 0, 0, width, height, ox, oy, z, z, interp);
+                    render_image_viewport(&pixbuf, dest, (ox, oy), z, interp);
                     gdk::prelude::GdkCairoContextExt::set_source_pixbuf(cr, dest, 0.0, 0.0);
                     let _ = cr.paint();
                 }
@@ -1035,11 +1356,10 @@ pub(super) fn append_image_viewer(
 
 pub(super) type PackedStroke = ((f64, f64, f64, f64), f64, Vec<(f64, f64)>);
 
-pub(super) fn export_annotated_image(
+fn render_annotated_image(
     pixbuf: &gdk_pixbuf::Pixbuf,
     strokes: &[PackedStroke],
-    data_dir: &std::path::Path,
-) -> anyhow::Result<PathBuf> {
+) -> anyhow::Result<cairo::ImageSurface> {
     let w = pixbuf.width().max(1);
     let h = pixbuf.height().max(1);
     let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h)
@@ -1067,13 +1387,35 @@ pub(super) fn export_annotated_image(
         cr.stroke().map_err(|e| anyhow::anyhow!("stroke: {e}"))?;
     }
 
+    Ok(surface)
+}
+
+fn image_clipboard_texture(
+    pixbuf: &gdk_pixbuf::Pixbuf,
+    strokes: &[PackedStroke],
+) -> anyhow::Result<gdk::Texture> {
+    if strokes.is_empty() {
+        return Ok(gdk::Texture::for_pixbuf(pixbuf));
+    }
+    let surface = render_annotated_image(pixbuf, strokes)?;
+    let mut png = Vec::new();
+    surface.write_to_png(&mut png)?;
+    Ok(gdk::Texture::from_bytes(&glib::Bytes::from_owned(png))?)
+}
+
+pub(super) fn export_annotated_image(
+    pixbuf: &gdk_pixbuf::Pixbuf,
+    strokes: &[PackedStroke],
+    data_dir: &std::path::Path,
+) -> anyhow::Result<PathBuf> {
+    let surface = render_annotated_image(pixbuf, strokes)?;
     let dir = data_dir.join("cache/media");
     std::fs::create_dir_all(&dir)?;
     let dest = dir.join(format!(
         "annotated-{}.png",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
+            .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
     let mut file = std::fs::File::create(&dest)?;
@@ -1084,68 +1426,10 @@ pub(super) fn export_annotated_image(
 }
 
 pub(super) fn send_local_image_file(state: &AppState, path: &std::path::Path) -> bool {
-    let Some(chat_mid) = state.current_chat.borrow().clone() else {
-        toast(state, &crate::i18n::t("select_chat_first"));
+    let Some(chat) = state.current_chat.borrow().clone() else {
         return false;
     };
-    if !*state.session_ready.borrow() {
-        toast(state, &crate::i18n::t("still_restoring"));
-        return false;
-    }
-    let cached = match copy_into_media_cache(state, path) {
-        Ok(p) => p,
-        Err(e) => {
-            toast(
-                state,
-                &crate::i18n::tf("media_send_failed", &[("error", &e.to_string())]),
-            );
-            return false;
-        }
-    };
-    let path_str = cached.to_string_lossy().to_string();
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("image.png")
-        .to_string();
-    match state
-        .sidecar
-        .send_media(&chat_mid, &path_str, "image", None)
-    {
-        Ok(id) => {
-            begin_optimistic_send(
-                state,
-                id,
-                &chat_mid,
-                MessageInfo {
-                    id: String::new(),
-                    text: "[Image]".into(),
-                    from: String::new(),
-                    to: chat_mid.clone(),
-                    mine: true,
-                    created_time: now_ms(),
-                    content_type: "IMAGE".into(),
-                    image_path: Some(path_str.clone()),
-                    audio_path: None,
-                    file_name: Some(file_name),
-                    file_path: Some(path_str),
-                    duration_ms: None,
-                    flex: None,
-                },
-            );
-            show_upload_progress(state, 0.02, &crate::i18n::t("media_uploading"));
-            dismiss_new_marker(state);
-            pin_messages_to_latest(state);
-            true
-        }
-        Err(e) => {
-            toast(
-                state,
-                &crate::i18n::tf("media_send_failed", &[("error", &e.to_string())]),
-            );
-            false
-        }
-    }
+    stage_attachment(state, &chat, path.to_path_buf())
 }
 
 pub(super) fn append_pdf_viewer(body: &gtk::Box, path: &str, suggest_name: &str) {
@@ -1490,33 +1774,6 @@ pub(super) fn ffprobe_duration_ms(path: &std::path::Path) -> Option<u64> {
         return None;
     }
     Some((secs * 1000.0).round() as u64)
-}
-
-pub(super) fn copy_into_media_cache(
-    state: &AppState,
-    src: &std::path::Path,
-) -> anyhow::Result<PathBuf> {
-    let dir = state.data_dir.join("cache/media");
-    std::fs::create_dir_all(&dir)?;
-    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("bin");
-    let name = format!(
-        "out-{}-{}.{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-        src.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("file")
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-            .take(40)
-            .collect::<String>(),
-        ext
-    );
-    let dest = dir.join(name);
-    std::fs::copy(src, &dest)?;
-    Ok(dest)
 }
 
 pub(super) fn mark_media_failed(state: &AppState, message_id: &str) {
@@ -1919,4 +2176,424 @@ pub(super) fn pump_media_queue(state: &AppState) {
             pump_media_queue(&state3);
         });
     });
+}
+
+#[cfg(test)]
+mod image_viewport_tests {
+    use super::render_image_viewport;
+    use gdk_pixbuf::{Colorspace, InterpType, Pixbuf};
+
+    fn buffer(width: i32, height: i32) -> Pixbuf {
+        Pixbuf::new(Colorspace::Rgb, true, 8, width, height).unwrap()
+    }
+
+    fn assert_pixels(dest: &Pixbuf, bounds: Option<(i32, i32, i32, i32)>) {
+        let bytes = dest.read_pixel_bytes();
+        let stride = dest.rowstride() as usize;
+        for y in 0..dest.height() {
+            for x in 0..dest.width() {
+                let visible = bounds.is_some_and(|(left, top, right, bottom)| {
+                    x >= left && x < right && y >= top && y < bottom
+                });
+                let expected = if visible {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 0, 0, 0]
+                };
+                let index = y as usize * stride + x as usize * 4;
+                assert_eq!(&bytes[index..index + 4], &expected, "pixel ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn centered_image_leaves_transparent_margins() {
+        let source = buffer(4, 2);
+        source.fill(0xff0000ff);
+        let dest = buffer(10, 8);
+        for interp in [InterpType::Nearest, InterpType::Bilinear] {
+            render_image_viewport(&source, &dest, (3.0, 3.0), 1.0, interp);
+            assert_pixels(&dest, Some((3, 3, 7, 5)));
+        }
+    }
+
+    #[test]
+    fn zoomed_panned_image_clips_to_viewport() {
+        let source = buffer(4, 2);
+        source.fill(0xff0000ff);
+        let dest = buffer(10, 8);
+        for interp in [InterpType::Nearest, InterpType::Bilinear] {
+            render_image_viewport(&source, &dest, (-2.0, 1.0), 2.0, interp);
+            assert_pixels(&dest, Some((0, 1, 6, 5)));
+            render_image_viewport(&source, &dest, (2.5, -0.5), 0.5, interp);
+            assert_pixels(&dest, Some((3, 0, 5, 1)));
+        }
+    }
+
+    #[test]
+    fn reused_buffer_clears_pixels_when_image_moves() {
+        let source = buffer(4, 2);
+        source.fill(0xff0000ff);
+        let dest = buffer(10, 8);
+        render_image_viewport(&source, &dest, (0.0, 0.0), 1.0, InterpType::Nearest);
+        assert_pixels(&dest, Some((0, 0, 4, 2)));
+        render_image_viewport(&source, &dest, (6.0, 6.0), 1.0, InterpType::Nearest);
+        assert_pixels(&dest, Some((6, 6, 10, 8)));
+        for offset in [(-10.0, 0.0), (10.0, 0.0), (0.0, -8.0), (0.0, 8.0)] {
+            render_image_viewport(&source, &dest, offset, 1.0, InterpType::Nearest);
+            assert_pixels(&dest, None);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a local image and output path"]
+    fn render_local_image() {
+        let source = Pixbuf::from_file(std::env::var("LINE_GTK_TEST_IMAGE").unwrap()).unwrap();
+        let dest = buffer(1916, 990);
+        render_image_viewport(&source, &dest, (292.0, 153.0), 1.0, InterpType::Bilinear);
+        dest.savev(std::env::var("LINE_GTK_TEST_RENDER").unwrap(), "png", &[])
+            .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod file_tests {
+    use super::*;
+
+    #[test]
+    fn viewer_uses_final_extension_not_path_substrings() {
+        assert!(matches!(
+            viewer_kind_for("FILE", "/tmp/pdfs.pdf/report.docx", "report.docx"),
+            ViewerKind::Generic
+        ));
+        assert!(matches!(
+            viewer_kind_for("FILE", "", "report.pdf.docx"),
+            ViewerKind::Generic
+        ));
+        assert!(matches!(
+            viewer_kind_for("FILE", "", "file.CAB"),
+            ViewerKind::Generic
+        ));
+        assert!(matches!(
+            viewer_kind_for("FILE", "", "report.PDF"),
+            ViewerKind::Pdf
+        ));
+    }
+
+    #[test]
+    fn cached_file_recovers_original_name_without_placeholder() {
+        let msg: MessageInfo = serde_json::from_value(serde_json::json!({
+            "id": "42", "contentType": "FILE", "text": "[File]", "fileName": "[File]", "filePath": "/tmp/cache/42_report.docx"
+        })).unwrap();
+        assert_eq!(suggest_media_name(&msg), "report.docx");
+    }
+    #[test]
+    fn generated_cache_extension_does_not_become_filename() {
+        let msg: MessageInfo = serde_json::from_value(serde_json::json!({"id":"42","text":"[File]","filePath":"/tmp/cache/42.pdf","contentType":"FILE"})).unwrap();
+        assert!(original_file_name(&msg).is_none());
+        assert_eq!(suggest_media_name(&msg), "line-42.pdf");
+        let card = FilePresentation::from_message(&msg);
+        assert_eq!(card.detail, "PDF");
+        assert_eq!(card.action, "open_viewer");
+    }
+
+    #[test]
+    fn file_presentation_uses_types_sizes_and_open_routes() {
+        for (name, label, icon, action) in [
+            (
+                "รายงาน.docx",
+                "Word · DOCX",
+                "x-office-document-symbolic",
+                "open_external",
+            ),
+            (
+                "budget.xlsx",
+                "Excel · XLSX",
+                "x-office-spreadsheet-symbolic",
+                "open_external",
+            ),
+            (
+                "slides.odp",
+                "PowerPoint · ODP",
+                "x-office-presentation-symbolic",
+                "open_external",
+            ),
+            (
+                "report.PDF",
+                "PDF",
+                "application-pdf-symbolic",
+                "open_viewer",
+            ),
+            (
+                "report.pdf.docx",
+                "Word · DOCX",
+                "x-office-document-symbolic",
+                "open_external",
+            ),
+            (
+                "backup.zip",
+                "file_type_archive · ZIP",
+                "package-x-generic-symbolic",
+                "open_external",
+            ),
+            (
+                "notes.txt",
+                "file_type_text · TXT",
+                "text-x-generic-symbolic",
+                "open_viewer",
+            ),
+            (
+                "custom.xyz",
+                "XYZ",
+                "text-x-generic-symbolic",
+                "open_external",
+            ),
+        ] {
+            let msg: MessageInfo = serde_json::from_value(
+                serde_json::json!({"fileName":name,"fileSize":2048,"contentType":"FILE"}),
+            )
+            .unwrap();
+            let card = FilePresentation::from_message(&msg);
+            assert_eq!(card.name, name);
+            assert_eq!(card.detail, format!("{label} · 2 KB"));
+            assert_eq!(card.icon, icon);
+            assert_eq!(card.action, action);
+        }
+        let msg: MessageInfo = serde_json::from_value(
+            serde_json::json!({"text":"[File]","fileName":"[File]","contentType":"FILE"}),
+        )
+        .unwrap();
+        let card = FilePresentation::from_message(&msg);
+        assert_eq!(card.name, crate::i18n::t("file_name_unknown"));
+        assert_eq!(card.detail, crate::i18n::t("file_type_unknown"));
+        assert_eq!(card.action, "open_external");
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display"]
+    fn gtk_file_card_shows_original_metadata() {
+        gtk::init().unwrap();
+        let msg: MessageInfo = serde_json::from_value(serde_json::json!({"fileName":"รายงานประจำเดือน.docx","fileSize":2048,"contentType":"FILE"})).unwrap();
+        let (card, action) = build_file_card(&msg);
+        assert_eq!(card.tooltip_text().as_deref(), Some("รายงานประจำเดือน.docx"));
+        assert_eq!(action, "open_external");
+        let row = card.child().unwrap().downcast::<gtk::Box>().unwrap();
+        let icon = row.first_child().unwrap().downcast::<gtk::Image>().unwrap();
+        assert_eq!(
+            icon.icon_name().as_deref(),
+            Some("x-office-document-symbolic")
+        );
+        let labels = icon.next_sibling().unwrap();
+        let name = labels
+            .first_child()
+            .unwrap()
+            .downcast::<gtk::Label>()
+            .unwrap();
+        assert_eq!(name.text(), "รายงานประจำเดือน.docx");
+        let detail = name
+            .next_sibling()
+            .unwrap()
+            .downcast::<gtk::Label>()
+            .unwrap();
+        assert_eq!(detail.text(), "Word · DOCX · 2 KB");
+    }
+    #[test]
+    fn external_attachment_uses_original_extension_and_keeps_payload() {
+        let temp =
+            std::env::temp_dir().join(format!("line-external-attachment-{}", std::process::id()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let source = temp.join("42.bin");
+        let payload = b"PK\x03\x04synthetic-office-document";
+        std::fs::write(&source, payload).unwrap();
+        let opened =
+            prepare_external_attachment(&temp.join("app"), source.to_str().unwrap(), "report.docx")
+                .unwrap();
+        assert_eq!(opened.extension().unwrap(), "docx");
+        assert!(opened.starts_with(temp.join("app/cache/media")));
+        assert_eq!(std::fs::read(&opened).unwrap(), payload);
+        assert_eq!(std::fs::read(&source).unwrap(), payload);
+        assert_eq!(
+            prepare_external_attachment(&temp.join("app"), opened.to_str().unwrap(), "report.docx")
+                .unwrap(),
+            opened
+        );
+        let duplicate =
+            prepare_external_attachment(&temp.join("app"), source.to_str().unwrap(), "report.docx")
+                .unwrap();
+        assert_ne!(duplicate, opened);
+        assert_eq!(std::fs::read(duplicate).unwrap(), payload);
+        let safe = prepare_external_attachment(
+            &temp.join("app"),
+            source.to_str().unwrap(),
+            "../../report.docx",
+        )
+        .unwrap();
+        assert_eq!(safe.parent(), opened.parent());
+        assert_eq!(safe.extension().unwrap(), "docx");
+        assert_eq!(
+            prepare_external_attachment(&temp.join("app"), source.to_str().unwrap(), "[File]")
+                .unwrap(),
+            source
+        );
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod image_copy_tests {
+    use super::*;
+
+    fn source() -> gdk_pixbuf::Pixbuf {
+        let pixbuf = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, true, 8, 32, 24).unwrap();
+        pixbuf.fill(0x20408080);
+        pixbuf
+    }
+
+    fn rendered(pixbuf: &gdk_pixbuf::Pixbuf, strokes: &[PackedStroke]) -> image::RgbaImage {
+        let mut png = Vec::new();
+        render_annotated_image(pixbuf, strokes)
+            .unwrap()
+            .write_to_png(&mut png)
+            .unwrap();
+        image::load_from_memory(&png).unwrap().into_rgba8()
+    }
+
+    #[test]
+    fn annotated_copy_render_keeps_full_dimensions_and_alpha() {
+        let pixbuf = source();
+        let before = pixbuf.read_pixel_bytes();
+        let original = rendered(&pixbuf, &[]);
+        assert_eq!(original.dimensions(), (32, 24));
+        assert_eq!(original.get_pixel(0, 0).0, [32, 64, 128, 128]);
+        let strokes = vec![((1.0, 0.0, 0.0, 1.0), 4.0, vec![(4.0, 10.0), (28.0, 10.0)])];
+        let edited = rendered(&pixbuf, &strokes);
+        assert_eq!(edited.dimensions(), (32, 24));
+        assert_eq!(edited.get_pixel(16, 10).0, [255, 0, 0, 255]);
+        assert_eq!(edited.get_pixel(0, 0), original.get_pixel(0, 0));
+        assert_eq!(pixbuf.read_pixel_bytes(), before);
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK display"]
+    fn gtk_image_copy_toolbar_keyboard_active_undo_clear() {
+        libadwaita::init().unwrap();
+        let temp = std::env::temp_dir().join(format!("line-image-copy-{}", std::process::id()));
+        std::fs::create_dir_all(temp.join("protocol")).unwrap();
+        let fake = temp.join("protocol/line-gtk-protocol");
+        let requests = temp.join("requests");
+        std::fs::write(&fake, format!("#!/usr/bin/python3\nimport sys\nfor line in sys.stdin:\n with open({:?}, 'a') as f: f.write(line)\n", requests)).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let data = temp.join("data");
+        AppConfig {
+            tray_enabled: false,
+            animations: false,
+            notifications: false,
+            ..AppConfig::default()
+        }
+        .save(&data);
+        let app = Application::builder()
+            .application_id("dev.linegtk.ImageCopyFixture")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let sidecar = Rc::new(Sidecar::spawn(&temp, &data).unwrap());
+        let (state, _) = build_state(
+            &app,
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+            data.clone(),
+            sidecar,
+        );
+        let path = temp.join("original.png");
+        source().savev(&path, "png", &[]).unwrap();
+        let original_file = std::fs::read(&path).unwrap();
+        let win = gtk::Window::new();
+        let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        append_image_viewer(&state, &bar, &body, path.to_str().unwrap(), &win);
+        let mut buttons = Vec::new();
+        let mut child = bar.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            buttons.push(widget);
+        }
+        let button = |name: &str| {
+            buttons
+                .iter()
+                .filter_map(|w| w.clone().downcast::<gtk::Button>().ok())
+                .find(|b| b.icon_name().as_deref() == Some(name))
+                .unwrap()
+        };
+        let copy = button("edit-copy-symbolic");
+        let clipboard = win.clipboard();
+        let read = || {
+            let texture = glib::MainContext::default()
+                .block_on(clipboard.read_texture_future())
+                .unwrap()
+                .unwrap();
+            image::load_from_memory(texture.save_to_png_bytes().as_ref())
+                .unwrap()
+                .into_rgba8()
+        };
+        copy.emit_clicked();
+        let original = read();
+        assert_eq!(original.dimensions(), (32, 24));
+        assert_eq!(original.get_pixel(0, 0).0, [32, 64, 128, 128]);
+        let draw = buttons
+            .iter()
+            .find_map(|w| w.clone().downcast::<gtk::ToggleButton>().ok())
+            .unwrap();
+        draw.set_active(true);
+        let area = body.first_child().unwrap();
+        let controllers = area.observe_controllers();
+        let drag = (0..controllers.n_items())
+            .find_map(|i| {
+                controllers
+                    .item(i)
+                    .unwrap()
+                    .downcast::<gtk::GestureDrag>()
+                    .ok()
+            })
+            .unwrap();
+        drag.emit_by_name::<()>("drag-begin", &[&10.0_f64, &10.0_f64]);
+        copy.emit_clicked();
+        let active = read();
+        assert_ne!(active.get_pixel(10, 10), original.get_pixel(10, 10));
+        drag.emit_by_name::<()>("drag-end", &[&0.0_f64, &0.0_f64]);
+        copy.emit_clicked();
+        assert_eq!(read(), active);
+        button("zoom-in-symbolic").emit_clicked();
+        copy.emit_clicked();
+        assert_eq!(read(), active);
+        button("edit-undo-symbolic").emit_clicked();
+        copy.emit_clicked();
+        assert_eq!(read(), original);
+        drag.emit_by_name::<()>("drag-begin", &[&15.0_f64, &10.0_f64]);
+        drag.emit_by_name::<()>("drag-end", &[&0.0_f64, &0.0_f64]);
+        button("edit-clear-all-symbolic").emit_clicked();
+        let controllers = win.observe_controllers();
+        let keys = (0..controllers.n_items())
+            .find_map(|i| {
+                controllers
+                    .item(i)
+                    .unwrap()
+                    .downcast::<gtk::EventControllerKey>()
+                    .ok()
+            })
+            .unwrap();
+        let handled = keys.emit_by_name::<bool>(
+            "key-pressed",
+            &[&gdk::Key::c, &0_u32, &gdk::ModifierType::CONTROL_MASK],
+        );
+        assert!(handled);
+        assert_eq!(read(), original);
+        assert_eq!(std::fs::read(&path).unwrap(), original_file);
+        assert!(!data.join("cache/media").exists());
+        assert!(!requests.exists() || std::fs::read_to_string(&requests).unwrap().is_empty());
+        clipboard
+            .set_content(None::<&gdk::ContentProvider>)
+            .unwrap();
+        win.close();
+        std::fs::remove_dir_all(temp).unwrap();
+    }
 }

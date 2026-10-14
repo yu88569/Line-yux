@@ -97,6 +97,8 @@ pub struct MessageInfo {
     pub audio_path: Option<String>,
     #[serde(rename = "fileName", default)]
     pub file_name: Option<String>,
+    #[serde(rename = "fileSize", default)]
+    pub file_size: Option<u64>,
     #[serde(rename = "filePath", default)]
     pub file_path: Option<String>,
     #[serde(rename = "durationMs", default)]
@@ -231,6 +233,21 @@ mod tests {
         assert_eq!(message.created_time, 0);
         assert!(!message.mine);
         assert!(message.image_path.is_none());
+        assert!(message.file_name.is_none());
+        assert!(message.file_size.is_none());
+    }
+
+    #[test]
+    fn message_reads_original_attachment_metadata() {
+        let message: MessageInfo =
+            serde_json::from_str(r#"{"id":"42","fileName":"รายงาน.docx","fileSize":2048}"#)
+                .unwrap();
+        assert_eq!(message.file_name.as_deref(), Some("รายงาน.docx"));
+        assert_eq!(message.file_size, Some(2048));
+        let message: MessageInfo =
+            serde_json::from_str(r#"{"fileName":null,"fileSize":null}"#).unwrap();
+        assert!(message.file_name.is_none());
+        assert!(message.file_size.is_none());
     }
 
     #[test]

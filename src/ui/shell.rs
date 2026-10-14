@@ -5,6 +5,8 @@ pub struct ShellWidgets {
     pub chat_list: gtk::ListBox,
     pub message_list: super::virtual_list::VirtualMessageList,
     pub message_scroll: gtk::ScrolledWindow,
+    pub attachment_strip: gtk::Box,
+    pub attachment_scroll: gtk::ScrolledWindow,
     pub composer: gtk::Entry,
     pub composer_row: gtk::Box,
     pub composer_stack: gtk::Stack,
@@ -522,6 +524,16 @@ pub fn build_shell_page() -> ShellWidgets {
     conversation.append(&msg_stack);
     conversation.append(&jump_banner);
     conversation.append(&upload_revealer);
+    let attachment_strip = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let attachment_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .max_content_height(210)
+        .propagate_natural_height(true)
+        .visible(false)
+        .child(&attachment_strip)
+        .build();
+    conversation.append(&attachment_scroll);
     conversation.append(&composer_stack);
 
     let sidebar_paned = gtk::Paned::builder()
@@ -548,6 +560,8 @@ pub fn build_shell_page() -> ShellWidgets {
         chat_list,
         message_list,
         message_scroll,
+        attachment_strip,
+        attachment_scroll,
         composer,
         composer_row,
         composer_stack,
@@ -804,6 +818,11 @@ pub fn load_css() {
             padding: 6px 4px;
             border-radius: 10px;
             min-width: 180px;
+        }
+        .line-file-actions button {
+            padding: 4px 6px;
+            min-height: 24px;
+            min-width: 0;
         }
         .line-file-card:hover {
             background: alpha(@accent_bg_color, 0.14);

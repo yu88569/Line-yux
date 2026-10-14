@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod attachment_draft_tests;
+mod attachment_drafts;
 mod call_window;
 mod calls;
 #[cfg(test)]
@@ -7,6 +10,9 @@ mod composer_media;
 mod diagnostics;
 mod downloads;
 mod events;
+#[cfg(test)]
+mod file_action_tests;
+mod file_actions;
 mod friends;
 mod login;
 mod media;
@@ -21,6 +27,7 @@ use crate::config::{AppConfig, apply_animations, apply_font, apply_theme};
 use crate::protocol::{ChatInfo, FlexAction, MessageInfo, Profile, ProtocolEvent};
 use crate::sidecar::Sidecar;
 use anyhow::Result;
+use attachment_drafts::*;
 use calls::*;
 use chats::*;
 use composer_media::*;
@@ -151,6 +158,12 @@ fn build_state(
         msg_empty: shell.msg_empty,
         msg_load_label: shell.msg_load_label,
         msg_idle: shell.msg_idle,
+        attachment_strip: shell.attachment_strip,
+        attachment_scroll: shell.attachment_scroll,
+        attachment_drafts: Rc::new(RefCell::new(HashMap::new())),
+        attachment_requests: Rc::new(RefCell::new(HashMap::new())),
+        next_attachment_id: Rc::new(RefCell::new(0)),
+        attachment_epoch: Rc::new(RefCell::new(0)),
         current_chat: Rc::new(RefCell::new(None)),
         chats: Rc::new(RefCell::new(Vec::new())),
         chat_avatars: Rc::new(RefCell::new(HashMap::new())),
@@ -939,13 +952,21 @@ fn wire_scroll_pin(state: &AppState) {
 
 fn send_current(state: &AppState) {
     let text = state.composer.text().trim().to_string();
-    if text.is_empty() {
-        return;
-    }
     let Some(chat_mid) = state.current_chat.borrow().clone() else {
         toast(state, &crate::i18n::t("select_chat_first"));
         return;
     };
+    if !*state.session_ready.borrow() {
+        toast(state, &crate::i18n::t("still_restoring"));
+        return;
+    }
+    if attachment_batch_pending(state, &chat_mid) {
+        return;
+    }
+    confirm_attachments(state, &chat_mid);
+    if text.is_empty() {
+        return;
+    }
     match state.sidecar.send_message(&chat_mid, &text) {
         Ok(id) => {
             begin_optimistic_send(
@@ -963,6 +984,7 @@ fn send_current(state: &AppState) {
                     image_path: None,
                     audio_path: None,
                     file_name: None,
+                    file_size: None,
                     file_path: None,
                     duration_ms: None,
                     flex: None,
@@ -1021,6 +1043,7 @@ fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg:
 
 fn apply_ui_language(state: &AppState) {
     crate::i18n::set_lang(&state.repo_root, &state.config.borrow().language);
+    refresh_attachment_drafts(state);
     state.side_title.set_text(&crate::i18n::t("chats"));
     state
         .composer
@@ -1160,9 +1183,26 @@ fn wire_drop_attachments(state: &AppState) {
         gdk::FileList::static_type(),
         gio::File::static_type(),
         gdk::Texture::static_type(),
+        String::static_type(),
     ]);
     let s = state.clone();
     drop.connect_drop(move |_, value, _x, _y| {
+        if let Ok(uris) = value.get::<String>() {
+            let Some(chat) = s.current_chat.borrow().clone() else {
+                return false;
+            };
+            let mut any = false;
+            for uri in uris
+                .lines()
+                .map(str::trim)
+                .filter(|uri| !uri.is_empty() && !uri.starts_with('#'))
+            {
+                if let Some(path) = gio::File::for_uri(uri).path() {
+                    any |= stage_attachment(&s, &chat, path);
+                }
+            }
+            return any;
+        }
         if let Ok(list) = value.get::<gdk::FileList>() {
             let mut any = false;
             for file in list.files() {
@@ -1341,8 +1381,11 @@ fn wire_actions(state: &AppState) {
                 let s2 = s.clone();
                 Rc::new(move || {
                     *s2.session_ready.borrow_mut() = false;
+                    invalidate_attachment_session(&s2);
                     s2.pending.borrow_mut().clear();
                     *s2.current_chat.borrow_mut() = None;
+                    s2.attachment_drafts.borrow_mut().clear();
+                    refresh_attachment_drafts(&s2);
                     *s2.discord_session_start.borrow_mut() = None;
                     clear_list(&s2.chat_list);
                     clear_messages(&s2);
@@ -1377,8 +1420,10 @@ fn wire_actions(state: &AppState) {
                     refresh_call_controls(&s2);
                     // Experimental call mode binds to session/device path: force re-login.
                     *s2.session_ready.borrow_mut() = false;
+                    invalidate_attachment_session(&s2);
                     s2.pending.borrow_mut().clear();
                     *s2.current_chat.borrow_mut() = None;
+                    refresh_attachment_drafts(&s2);
                     clear_list(&s2.chat_list);
                     clear_messages(&s2);
                     s2.chats.borrow_mut().clear();
@@ -1577,6 +1622,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
     state.current_chat.borrow_mut().replace(chat.mid.clone());
+    refresh_attachment_drafts(state);
     hide_upload_progress(state);
     {
         let mut cfg = state.config.borrow_mut();
@@ -1657,6 +1703,8 @@ fn submit_email_login(state: &AppState) {
 }
 
 fn restart_login(state: &AppState) {
+    invalidate_attachment_session(state);
+    *state.session_ready.borrow_mut() = false;
     *state.restarting.borrow_mut() = true;
     state.pending.borrow_mut().clear();
     login::show_method_stage(&state.login);

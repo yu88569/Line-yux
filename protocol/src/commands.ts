@@ -16,6 +16,11 @@ import {
   type PasswordLoginDiagnostic,
 } from "./auth.ts";
 import { loginWithPassword } from "./password_login.ts";
+import {
+  attachmentName,
+  attachmentSize,
+  needsFileMetadataRefresh,
+} from "./file_metadata.ts";
 
 type Json = Record<string, unknown>;
 type ChatRow = {
@@ -496,7 +501,10 @@ export function createCommandService(runtime: CommandRuntime) {
     await dedupe(`msgs:${chatMid}:${limit}:${force}`, async () => {
       bumpMediaEpoch(chatMid); // cancel any prior hydrate for this chat
       const cached = msgCache.get(chatMid);
-      if (!force && cached && Date.now() - cached.at < cachePolicy().memMsg) {
+      if (
+        !force && cached && Date.now() - cached.at < cachePolicy().memMsg &&
+        !needsFileMetadataRefresh(cached.messages)
+      ) {
         const ui = await forUiMessages(cached.messages);
         ok(id, { messages: ui, cached: true });
         hydrateMedia(cached.messages, chatMid);
@@ -615,6 +623,20 @@ export function createCommandService(runtime: CommandRuntime) {
           }
         }
 
+        const previous = new Map(
+          (msgCache.get(chatMid)?.messages ?? []).map((m) => [String(m.id), m]),
+        );
+        for (const message of out) {
+          if (message.contentType !== "FILE") continue;
+          const downloaded = previous.get(String(message.id));
+          if (typeof downloaded?.filePath !== "string") continue;
+          message.filePath = downloaded.filePath;
+          message.fileSize = attachmentSize(downloaded.fileSize) ??
+            message.fileSize;
+          message.fileName = attachmentName(message.fileName) ||
+            attachmentName(downloaded.fileName);
+          message.text = message.fileName || "[File]";
+        }
         out.sort((a, b) => Number(a.createdTime) - Number(b.createdTime));
         msgCache.set(chatMid, { at: Date.now(), messages: out });
         await saveDiskMessages(chatMid, out);

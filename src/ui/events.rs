@@ -71,6 +71,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             on_logged_in(state, &result);
         }
         ProtocolEvent::SessionFailed { error } => {
+            restore_attachment_requests(state);
             *state.session_ready.borrow_mut() = false;
             hide_upload_progress(state);
             let msg = if error.contains("relogin_android_required") {
@@ -496,6 +497,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             result,
             error,
         } => {
+            settle_attachment(state, id, ok);
             let pending = state.pending.borrow_mut().remove(&id);
             if pending.is_none() {
                 return;
@@ -512,6 +514,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     state.login.retry_btn.set_visible(true);
                     *state.restarting.borrow_mut() = true;
                     login::set_phase(&state.login, login::LoginPhase::Recovering);
+                    invalidate_attachment_session(state);
                     if state.sidecar.restart().is_err() {
                         *state.restarting.borrow_mut() = false;
                         login::set_phase(&state.login, login::LoginPhase::Idle);
@@ -611,6 +614,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 Some(Pending::ListStickers) => {
                     fill_sticker_popover(state, &result);
                 }
+                Some(Pending::ShareFile { chat_mid }) => {
+                    file_actions::complete_shared_file(state, &chat_mid, &result);
+                }
                 Some(Pending::DownloadMedia {
                     action,
                     content_type,
@@ -619,15 +625,44 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     ..
                 }) => {
                     if let Some(path) = result.get("path").and_then(|v| v.as_str()) {
-                        if let Some(meta) = state.media_msgs.borrow_mut().get_mut(&message_id) {
-                            meta.file_path = Some(path.to_string());
-                            if content_type.eq_ignore_ascii_case("image") {
-                                meta.image_path = Some(path.to_string());
-                            } else if content_type.eq_ignore_ascii_case("audio") {
-                                meta.audio_path = Some(path.to_string());
+                        let downloaded_name = result
+                            .get("fileName")
+                            .and_then(|v| v.as_str())
+                            .and_then(meaningful_file_name);
+                        let name = downloaded_name.unwrap_or(&suggest_name).to_string();
+                        let updated = {
+                            let mut messages = state.media_msgs.borrow_mut();
+                            if let Some(meta) = messages.get_mut(&message_id) {
+                                meta.file_path = Some(path.to_string());
+                                if let Some(name) = downloaded_name {
+                                    meta.file_name = Some(name.to_string());
+                                }
+                                meta.file_size = result
+                                    .get("bytes")
+                                    .and_then(|v| v.as_u64())
+                                    .or(meta.file_size);
+                                if content_type.eq_ignore_ascii_case("image") {
+                                    meta.image_path = Some(path.to_string());
+                                } else if content_type.eq_ignore_ascii_case("audio") {
+                                    meta.audio_path = Some(path.to_string());
+                                }
+                                Some(meta.clone())
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(meta) =
+                            updated.filter(|m| m.content_type.eq_ignore_ascii_case("FILE"))
+                        {
+                            let bubble = state.media_slots.borrow().get(&message_id).cloned();
+                            if let Some(bubble) = bubble {
+                                while let Some(child) = bubble.first_child() {
+                                    bubble.remove(&child);
+                                }
+                                append_file_card(state, &bubble, &meta);
                             }
                         }
-                        finish_media_action(state, &action, path, &suggest_name, &content_type);
+                        finish_downloaded_media_action(state, &action, path, &name, &content_type);
                     } else {
                         toast(state, &crate::i18n::t("media_download_failed"));
                     }
@@ -637,6 +672,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         }
         ProtocolEvent::Error(e) => toast(state, &e),
         ProtocolEvent::Exited(code) => {
+            *state.session_ready.borrow_mut() = false;
+            restore_attachment_requests(state);
             if !*state.restarting.borrow() {
                 tracing::warn!(code, "protocol engine exited unexpectedly");
                 schedule_sidecar_recovery(state);
@@ -674,6 +711,7 @@ pub(super) fn schedule_sidecar_recovery(state: &AppState) {
 }
 
 pub(super) fn recover_sidecar(state: &AppState) {
+    restore_attachment_requests(state);
     match state.sidecar.recover() {
         Ok(()) => {
             state
