@@ -165,7 +165,7 @@ pub(super) fn upsert_chat_row(state: &AppState, chat: ChatInfo) {
         if let Some(pos) = state.chats.borrow().iter().position(|c| c.mid == mid)
             && let Some(row) = state.chat_list.row_at_index(pos as i32)
         {
-            update_chat_row_name(&row, &chat.name);
+            update_chat_row_name(&row, &state.chats.borrow()[pos].name);
             if let Some(path) = chat.avatar_path.as_deref()
                 && std::path::Path::new(path).exists()
                 && let Some(img) = state.chat_avatars.borrow().get(&mid).cloned()

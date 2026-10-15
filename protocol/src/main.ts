@@ -22,6 +22,10 @@ import { createMediaCache } from "./media_cache.ts";
 import { createStickerService } from "./stickers.ts";
 import { resolveSenderAvatar } from "./sender_avatar.ts";
 import { createCommandService } from "./commands.ts";
+import {
+  type ContactInfo,
+  resolveContactInfo as resolveIdentity,
+} from "./chat_identity.ts";
 import { createListener } from "./listener.ts";
 import { createMessageView } from "./message_view.ts";
 
@@ -293,10 +297,7 @@ const outgoingMedia = createOutgoingMedia({
 let chatCache: { at: number; chats: ChatRow[] } | null = null;
 const msgCache = new Map<string, { at: number; messages: Json[] }>();
 const inFlight = new Map<string, Promise<unknown>>();
-const contactIndex = new Map<
-  string,
-  { name: string; picturePath: string | null; kind: string; muted: boolean }
->();
+const contactIndex = new Map<string, ContactInfo>();
 const mediaEpoch = new Map<string, number>();
 type BoxCursor = {
   messageId: bigint | number;
@@ -346,6 +347,7 @@ const commands = createCommandService({
   storeBoxCursor,
   existingFile,
   loadDiskContacts,
+  saveDiskContacts,
   refreshContactIndex,
   hydrateAvatars,
   hydratePreviews,
@@ -717,7 +719,10 @@ async function refreshContactIndex(force = false) {
         const kind = /BOT/i.test(type) ? "bot" : "dm";
         contactIndex.set(mid, {
           name: c.displayName || mid,
-          picturePath: c.picturePath ?? null,
+          picturePath: picturePathOf({
+            picturePath: c.picturePath,
+            pictureStatus: c.pictureStatus,
+          }),
           kind,
           muted: !!(c as { notificationDisabled?: boolean })
             .notificationDisabled,
@@ -731,7 +736,10 @@ async function refreshContactIndex(force = false) {
           const type = String(c.type ?? "");
           contactIndex.set(mid, {
             name: c.displayName || mid,
-            picturePath: c.picturePath ?? null,
+            picturePath: picturePathOf({
+              picturePath: c.picturePath,
+              pictureStatus: c.pictureStatus,
+            }),
             kind: /BOT/i.test(type) ? "bot" : "dm",
             muted: !!(c as { notificationDisabled?: boolean })
               .notificationDisabled,
@@ -1430,46 +1438,12 @@ function touchChatPreviewFromMessage(message: Json) {
   void upsertChatFromMessage(message);
 }
 
-async function resolveContactInfo(mid: string): Promise<{
-  name: string;
-  picturePath: string | null;
-  kind: string;
-  muted: boolean;
-}> {
-  const cached = contactIndex.get(mid);
-  if (cached?.name && cached.name !== mid) return cached;
-  if (!client) {
-    return cached ?? {
-      name: mid,
-      picturePath: null,
-      kind: mid.startsWith("c") || mid.startsWith("r") ? "group" : "dm",
-      muted: false,
-    };
-  }
-  try {
-    const c = await client.base.talk.getContact({ mid });
-    const type = String(c.type ?? "");
-    const info = {
-      name: c.displayName || mid,
-      picturePath: c.picturePath ?? null,
-      kind: /BOT/i.test(type)
-        ? "bot"
-        : mid.startsWith("c") || mid.startsWith("r")
-        ? "group"
-        : "dm",
-      muted: !!(c as { notificationDisabled?: boolean }).notificationDisabled,
-    };
-    contactIndex.set(mid, info);
-    await saveDiskContacts();
-    return info;
-  } catch {
-    return cached ?? {
-      name: mid,
-      picturePath: null,
-      kind: mid.startsWith("c") || mid.startsWith("r") ? "group" : "dm",
-      muted: false,
-    };
-  }
+async function resolveContactInfo(mid: string): Promise<ContactInfo> {
+  return await resolveIdentity(mid, {
+    contactIndex,
+    getTalk: () => client?.base.talk ?? null,
+    saveContacts: saveDiskContacts,
+  });
 }
 
 async function upsertChatFromMessage(message: Json) {

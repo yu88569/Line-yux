@@ -152,15 +152,12 @@ fn status_icon(state: &AppState, mid: &str, name: &str, visible: bool) {
     }
 }
 
-#[test]
-#[ignore = "requires a GTK display"]
-fn gtk_menu_actions_mutate_real_state_and_show_status_icons() {
+fn chat_fixture(name: &str, application_id: &str) -> (PathBuf, PathBuf, Application, AppState) {
     libadwaita::init().unwrap();
     gtk::Settings::default()
         .unwrap()
         .set_gtk_enable_animations(false);
-    let temp =
-        std::env::temp_dir().join(format!("line-gtk-menu-interaction-{}", std::process::id()));
+    let temp = std::env::temp_dir().join(format!("line-gtk-{name}-{}", std::process::id()));
     std::fs::create_dir_all(temp.join("protocol")).unwrap();
     let fake_protocol = temp.join("protocol/line-gtk-protocol");
     std::fs::write(&fake_protocol, "#!/bin/sh\nexit 0\n").unwrap();
@@ -178,7 +175,7 @@ fn gtk_menu_actions_mutate_real_state_and_show_status_icons() {
     };
     config.save(&data);
     let app = Application::builder()
-        .application_id("dev.linegtk.ChatInteractionFixture")
+        .application_id(application_id)
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     app.register(None::<&gio::Cancellable>).unwrap();
@@ -189,6 +186,59 @@ fn gtk_menu_actions_mutate_real_state_and_show_status_icons() {
         data.clone(),
         sidecar,
     );
+    (temp, data, app, state)
+}
+
+#[test]
+#[ignore = "requires a GTK display"]
+fn gtk_chat_upserts_preserve_resolved_names_and_accept_renames() {
+    let (temp, _, _app, state) = chat_fixture("name-fixture", "dev.linegtk.ChatNameFixture");
+    *state.restored_last_chat.borrow_mut() = true;
+    for compact in [false, true] {
+        *state.sidebar_compact.borrow_mut() = compact;
+        apply_chats(&state, vec![chat("c-target", 10)], false);
+        let mut named_group = chat("c-target", 10);
+        named_group.name = "กลุ่มเพื่อน".into();
+        upsert_chat_row(&state, named_group);
+        for (incoming_name, expected_name) in [
+            ("c-target", "กลุ่มเพื่อน"),
+            ("กลุ่มชื่อใหม่", "กลุ่มชื่อใหม่"),
+            ("", "กลุ่มชื่อใหม่"),
+        ] {
+            let mut incoming = chat("c-target", 10);
+            incoming.name = incoming_name.into();
+            upsert_chat_row(&state, incoming);
+            let target = row(&state, "c-target");
+            let label = descendants(target.upcast_ref())
+                .into_iter()
+                .filter_map(|w| w.downcast::<gtk::Label>().ok())
+                .find(|label| label.has_css_class("line-chat-name"))
+                .unwrap();
+            assert_eq!(label.text().as_str(), expected_name);
+            assert_eq!(target.tooltip_text().as_deref(), Some(expected_name));
+            assert_eq!(
+                state
+                    .chats
+                    .borrow()
+                    .iter()
+                    .find(|c| c.mid == "c-target")
+                    .unwrap()
+                    .name,
+                expected_name
+            );
+        }
+    }
+    state.window.destroy();
+    state.discord.shutdown();
+    drain();
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+#[ignore = "requires a GTK display"]
+fn gtk_menu_actions_mutate_real_state_and_show_status_icons() {
+    let (temp, data, app, state) =
+        chat_fixture("menu-interaction", "dev.linegtk.ChatInteractionFixture");
     wire_actions(&state);
     *state.session_ready.borrow_mut() = true;
     *state.restored_last_chat.borrow_mut() = true;

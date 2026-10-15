@@ -10,6 +10,7 @@ import { join } from "@std/path";
 import { atomicWriteJson } from "./storage.ts";
 import type { CachePolicy } from "./cache_policy.ts";
 import { friendName, picturePathOf } from "./contacts.ts";
+import { chatInfo, type ContactInfo } from "./chat_identity.ts";
 import {
   classifyPasswordLoginFailure,
   type LineDevice,
@@ -37,12 +38,6 @@ type ChatRow = {
 };
 type ChatCache = { at: number; chats: ChatRow[] };
 type BoxCursor = { messageId: bigint | number; deliveredTime: bigint | number };
-type ContactInfo = {
-  name: string;
-  picturePath: string | null;
-  kind: string;
-  muted: boolean;
-};
 
 export type CommandRuntime = {
   getClient: () => Client | null;
@@ -68,6 +63,7 @@ export type CommandRuntime = {
   ) => void;
   existingFile: (path: string) => Promise<string | null>;
   loadDiskContacts: () => Promise<void>;
+  saveDiskContacts: () => Promise<void>;
   refreshContactIndex: (force?: boolean) => Promise<void>;
   hydrateAvatars: (chats: ChatRow[]) => Promise<void>;
   hydratePreviews: (chats: ChatRow[]) => Promise<void>;
@@ -126,6 +122,7 @@ export function createCommandService(runtime: CommandRuntime) {
     storeBoxCursor,
     existingFile,
     loadDiskContacts,
+    saveDiskContacts,
     refreshContactIndex,
     hydrateAvatars,
     hydratePreviews,
@@ -440,17 +437,22 @@ export function createCommandService(runtime: CommandRuntime) {
         const chats = await client!.fetchJoinedChats();
         for (const chat of chats) {
           const prev = byMid.get(chat.mid);
+          const info = chatInfo(chat.mid, chat.raw);
+          info.picturePath ??= prev?.picturePath ?? null;
+          contactIndex.set(chat.mid, info);
           byMid.set(chat.mid, {
             mid: chat.mid,
-            name: chat.name || chat.raw.chatName || chat.mid,
-            kind: "group",
+            name: info.name,
+            kind: info.kind,
             lastActivity: prev?.lastActivity ?? 0,
             unread: prev?.unread ?? 0,
             preview: prev?.preview ?? "",
-            picturePath: prev?.picturePath ?? null,
+            picturePath: info.picturePath,
             avatarPath: prev?.avatarPath ?? null,
+            muted: info.muted,
           });
         }
+        await saveDiskContacts();
       } catch (e) {
         console.error("[list_chats] groups", e);
       }
