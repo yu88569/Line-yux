@@ -490,137 +490,176 @@ pub(super) fn wire_media_open_click(
     wire_media_open_click_widget(state, pic.upcast_ref::<gtk::Widget>(), msg);
 }
 
+#[derive(Clone)]
+pub(super) struct MediaViewer {
+    pub window: gtk::Window,
+    copy_keys: Rc<RefCell<Option<gtk::EventControllerKey>>>,
+}
+
+impl MediaViewer {
+    pub fn new(state: &AppState) -> Self {
+        let window = gtk::Window::builder()
+            .application(&state.app)
+            .modal(false)
+            .title(crate::i18n::t("media_viewer_title"))
+            .default_width(1080)
+            .default_height(760)
+            .css_classes(["line-media-viewer"])
+            .build();
+        let controller = gtk::EventControllerKey::new();
+        let weak = window.downgrade();
+        controller.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk::Key::Escape {
+                if let Some(window) = weak.upgrade() {
+                    window.close();
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        window.add_controller(controller);
+        Self {
+            window,
+            copy_keys: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    pub fn clear(&self) {
+        if let Some(controller) = self.copy_keys.borrow_mut().take() {
+            self.window.remove_controller(&controller);
+        }
+        self.window.set_child(None::<&gtk::Widget>);
+    }
+
+    pub fn show(
+        &self,
+        state: &AppState,
+        path: &str,
+        content_type: &str,
+        suggest_name: &str,
+        navigation: Option<&gtk::Box>,
+    ) {
+        self.clear();
+        let win = &self.window;
+        let kind = viewer_kind_for(content_type, path, suggest_name);
+        let root = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .css_classes(["line-media-viewer-root"])
+            .build();
+
+        let bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(8)
+            .margin_bottom(8)
+            .css_classes(["line-media-viewer-bar"])
+            .build();
+        let title = gtk::Label::builder()
+            .label(suggest_name)
+            .hexpand(true)
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["heading"])
+            .build();
+
+        let open_ext = gtk::Button::builder()
+            .icon_name("document-open-symbolic")
+            .tooltip_text(crate::i18n::t("media_open_externally"))
+            .css_classes(["flat", "circular"])
+            .build();
+        let dl = gtk::Button::builder()
+            .icon_name("folder-download-symbolic")
+            .tooltip_text(crate::i18n::t("media_download"))
+            .css_classes(["flat", "circular"])
+            .build();
+        let close = gtk::Button::builder()
+            .icon_name("window-close-symbolic")
+            .tooltip_text(crate::i18n::t("media_close"))
+            .css_classes(["flat", "circular"])
+            .build();
+        bar.append(&title);
+
+        let body = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .hexpand(true)
+            .vexpand(true)
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Fill)
+            .css_classes(["line-media-viewer-body"])
+            .build();
+
+        match kind {
+            ViewerKind::Video => {
+                append_gpu_video_viewer(&body, path);
+            }
+            ViewerKind::Image => {
+                *self.copy_keys.borrow_mut() = append_image_viewer(state, &bar, &body, path, win);
+            }
+            ViewerKind::Pdf => {
+                append_pdf_viewer(&body, path, suggest_name);
+            }
+            ViewerKind::Text => {
+                append_text_viewer(&body, path);
+            }
+            ViewerKind::Audio => {
+                append_audio_viewer(state, &body, path);
+            }
+            ViewerKind::Generic => {
+                append_generic_file_viewer(&body, path, suggest_name);
+            }
+        }
+
+        bar.append(&open_ext);
+        bar.append(&dl);
+        bar.append(&close);
+        root.append(&bar);
+        if let Some(navigation) = navigation {
+            root.append(navigation);
+        }
+        root.append(&body);
+        win.set_child(Some(&root));
+
+        {
+            let w = win.clone();
+            close.connect_clicked(move |_| w.close());
+        }
+        {
+            let path = path.to_string();
+            open_ext.connect_clicked(move |_| {
+                open_path_externally(&path);
+            });
+        }
+        {
+            let s = state.clone();
+            let path = path.to_string();
+            let name = suggest_name.to_string();
+            let ct = content_type.to_string();
+            dl.connect_clicked(move |_| {
+                save_media_as(&s, &path, &name, &ct);
+            });
+        }
+    }
+}
+
 pub(super) fn open_media_viewer(
     state: &AppState,
     path: &str,
     content_type: &str,
     suggest_name: &str,
 ) {
-    let kind = viewer_kind_for(content_type, path, suggest_name);
-    let (def_w, def_h) = match kind {
+    let viewer = MediaViewer::new(state);
+    let (width, height) = match viewer_kind_for(content_type, path, suggest_name) {
         ViewerKind::Video => (1100, 720),
         ViewerKind::Image => (1080, 760),
         ViewerKind::Pdf | ViewerKind::Text => (920, 700),
         _ => (720, 480),
     };
-
-    let win = gtk::Window::builder()
-        .transient_for(&state.window)
-        .modal(true)
-        .title(crate::i18n::t("media_viewer_title"))
-        .default_width(def_w)
-        .default_height(def_h)
-        .css_classes(["line-media-viewer"])
-        .build();
-
-    let root = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(0)
-        .css_classes(["line-media-viewer-root"])
-        .build();
-
-    let bar = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(6)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(8)
-        .margin_bottom(8)
-        .css_classes(["line-media-viewer-bar"])
-        .build();
-    let title = gtk::Label::builder()
-        .label(suggest_name)
-        .hexpand(true)
-        .xalign(0.0)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .css_classes(["heading"])
-        .build();
-
-    let open_ext = gtk::Button::builder()
-        .icon_name("document-open-symbolic")
-        .tooltip_text(crate::i18n::t("media_open_externally"))
-        .css_classes(["flat", "circular"])
-        .build();
-    let dl = gtk::Button::builder()
-        .icon_name("folder-download-symbolic")
-        .tooltip_text(crate::i18n::t("media_download"))
-        .css_classes(["flat", "circular"])
-        .build();
-    let close = gtk::Button::builder()
-        .icon_name("window-close-symbolic")
-        .tooltip_text(crate::i18n::t("media_close"))
-        .css_classes(["flat", "circular"])
-        .build();
-    bar.append(&title);
-
-    let body = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .hexpand(true)
-        .vexpand(true)
-        .halign(gtk::Align::Fill)
-        .valign(gtk::Align::Fill)
-        .css_classes(["line-media-viewer-body"])
-        .build();
-
-    match kind {
-        ViewerKind::Video => {
-            append_gpu_video_viewer(&body, path);
-        }
-        ViewerKind::Image => {
-            append_image_viewer(state, &bar, &body, path, &win);
-        }
-        ViewerKind::Pdf => {
-            append_pdf_viewer(&body, path, suggest_name);
-        }
-        ViewerKind::Text => {
-            append_text_viewer(&body, path);
-        }
-        ViewerKind::Audio => {
-            append_audio_viewer(state, &body, path);
-        }
-        ViewerKind::Generic => {
-            append_generic_file_viewer(&body, path, suggest_name);
-        }
-    }
-
-    bar.append(&open_ext);
-    bar.append(&dl);
-    bar.append(&close);
-    root.append(&bar);
-    root.append(&body);
-    win.set_child(Some(&root));
-
-    {
-        let w = win.clone();
-        close.connect_clicked(move |_| w.close());
-    }
-    {
-        let path = path.to_string();
-        open_ext.connect_clicked(move |_| {
-            open_path_externally(&path);
-        });
-    }
-    {
-        let s = state.clone();
-        let path = path.to_string();
-        let name = suggest_name.to_string();
-        let ct = content_type.to_string();
-        dl.connect_clicked(move |_| {
-            save_media_as(&s, &path, &name, &ct);
-        });
-    }
-
-    let controller = gtk::EventControllerKey::new();
-    let w = win.clone();
-    controller.connect_key_pressed(move |_, key, _, _| {
-        if key == gtk::gdk::Key::Escape {
-            w.close();
-            return glib::Propagation::Stop;
-        }
-        glib::Propagation::Proceed
-    });
-    win.add_controller(controller);
-    win.present();
+    viewer.window.set_default_size(width, height);
+    viewer.show(state, path, content_type, suggest_name, None);
+    viewer.window.present();
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -838,14 +877,7 @@ pub(super) fn append_image_viewer(
     body: &gtk::Box,
     path: &str,
     win: &gtk::Window,
-) {
-    #[derive(Clone)]
-    struct Stroke {
-        color: (f64, f64, f64, f64),
-        width: f64,
-        points: Vec<(f64, f64)>,
-    }
-
+) -> Option<gtk::EventControllerKey> {
     let Ok(base_pixbuf) = gdk_pixbuf::Pixbuf::from_file(path) else {
         let label = gtk::Label::builder()
             .label(crate::i18n::t("media_unsupported_preview"))
@@ -854,8 +886,9 @@ pub(super) fn append_image_viewer(
             .valign(gtk::Align::Center)
             .build();
         body.append(&label);
-        return;
+        return None;
     };
+    super::qr::append_button(bar, path, win);
     let nat_w = base_pixbuf.width().max(1);
     let nat_h = base_pixbuf.height().max(1);
 
@@ -867,12 +900,12 @@ pub(super) fn append_image_viewer(
     let pixbuf = Rc::new(base_pixbuf);
     // Reused viewport-sized buffer so pan/zoom never reallocates every frame.
     let scratch = Rc::new(RefCell::new(None::<gdk_pixbuf::Pixbuf>));
-    let strokes = Rc::new(RefCell::new(Vec::<Stroke>::new()));
-    let draw_mode = Rc::new(RefCell::new(false));
+    let strokes = Rc::new(RefCell::new(Vec::<Annotation>::new()));
+    let tool = Rc::new(RefCell::new(ViewerTool::Pan));
     let brush_color = Rc::new(RefCell::new((0.90_f64, 0.22, 0.21, 1.0)));
     let brush_width = Rc::new(RefCell::new(6.0_f64));
-    let active_stroke = Rc::new(RefCell::new(None::<Stroke>));
-    let pan_origin = Rc::new(RefCell::new((0.0_f64, 0.0)));
+    let active_stroke = Rc::new(RefCell::new(None::<Annotation>));
+    let active_drag = Rc::new(RefCell::new(None::<ViewerDrag>));
 
     let zoom_out = gtk::Button::builder()
         .icon_name("zoom-out-symbolic")
@@ -898,6 +931,16 @@ pub(super) fn append_image_viewer(
         .tooltip_text(crate::i18n::t("media_draw"))
         .css_classes(["flat", "circular"])
         .build();
+    let rectangle_btn = gtk::ToggleButton::builder()
+        .label("□")
+        .tooltip_text(crate::i18n::t("media_draw_rectangle"))
+        .css_classes(["flat", "circular"])
+        .build();
+    let circle_btn = gtk::ToggleButton::builder()
+        .label("○")
+        .tooltip_text(crate::i18n::t("media_draw_circle"))
+        .css_classes(["flat", "circular"])
+        .build();
     let undo_btn = gtk::Button::builder()
         .icon_name("edit-undo-symbolic")
         .tooltip_text(crate::i18n::t("media_draw_undo"))
@@ -917,6 +960,8 @@ pub(super) fn append_image_viewer(
         .build();
     bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     bar.append(&draw_btn);
+    bar.append(&rectangle_btn);
+    bar.append(&circle_btn);
     for (r, g, b, class, tip) in [
         (0.90, 0.22, 0.21, "line-draw-c-red", "Red"),
         (0.26, 0.63, 0.28, "line-draw-c-green", "Green"),
@@ -932,9 +977,10 @@ pub(super) fn append_image_viewer(
             .build();
         let brush_color = brush_color.clone();
         let draw_btn = draw_btn.clone();
+        let tool = tool.clone();
         btn.connect_clicked(move |_| {
             *brush_color.borrow_mut() = (r, g, b, 1.0);
-            if !draw_btn.is_active() {
+            if *tool.borrow() == ViewerTool::Pan {
                 draw_btn.set_active(true);
             }
         });
@@ -960,7 +1006,7 @@ pub(super) fn append_image_viewer(
                 .borrow()
                 .iter()
                 .chain(active_stroke.borrow().iter())
-                .map(|stroke| (stroke.color, stroke.width, stroke.points.clone()))
+                .cloned()
                 .collect();
             match image_clipboard_texture(&pixbuf, &packed) {
                 Ok(texture) => {
@@ -989,7 +1035,7 @@ pub(super) fn append_image_viewer(
         }
         glib::Propagation::Proceed
     });
-    win.add_controller(copy_keys);
+    win.add_controller(copy_keys.clone());
 
     let area = gtk::DrawingArea::builder()
         .hexpand(true)
@@ -1042,32 +1088,13 @@ pub(super) fn append_image_viewer(
                 }
             }
 
-            // Strokes in image space → widget space.
-            let paint_stroke = |cr: &gtk::cairo::Context, stroke: &Stroke| {
-                if stroke.points.is_empty() {
-                    return;
-                }
-                let (r, g, b, a) = stroke.color;
-                cr.set_source_rgba(r, g, b, a);
-                cr.set_line_width((stroke.width * z).max(1.0));
-                cr.set_line_cap(gtk::cairo::LineCap::Round);
-                cr.set_line_join(gtk::cairo::LineJoin::Round);
-                let (x0, y0) = stroke.points[0];
-                cr.move_to(ox + x0 * z, oy + y0 * z);
-                for &(x, y) in stroke.points.iter().skip(1) {
-                    cr.line_to(ox + x * z, oy + y * z);
-                }
-                if stroke.points.len() == 1 {
-                    cr.line_to(ox + x0 * z + 0.01, oy + y0 * z);
-                }
-                let _ = cr.stroke();
-            };
-            for stroke in strokes.borrow().iter() {
-                paint_stroke(cr, stroke);
+            let _ = cr.save();
+            cr.translate(ox, oy);
+            cr.scale(z, z);
+            for stroke in strokes.borrow().iter().chain(active_stroke.borrow().iter()) {
+                let _ = paint_annotation(cr, stroke);
             }
-            if let Some(stroke) = active_stroke.borrow().as_ref() {
-                paint_stroke(cr, stroke);
-            }
+            let _ = cr.restore();
         }
     });
 
@@ -1163,13 +1190,43 @@ pub(super) fn append_image_viewer(
         })
     };
 
-    {
-        let draw_mode = draw_mode.clone();
+    let tool_buttons = [
+        (draw_btn, ViewerTool::Freehand),
+        (rectangle_btn, ViewerTool::Rectangle),
+        (circle_btn, ViewerTool::Circle),
+    ];
+    for (button, selected) in &tool_buttons {
+        let selected = *selected;
+        let others: Vec<_> = tool_buttons
+            .iter()
+            .filter(|(_, candidate)| *candidate != selected)
+            .map(|(button, _)| button.downgrade())
+            .collect();
+        let tool = tool.clone();
+        let active_stroke = active_stroke.clone();
+        let active_drag = active_drag.clone();
+        let fast_paint = fast_paint.clone();
         let area = area.clone();
-        draw_btn.connect_toggled(move |btn| {
-            let on = btn.is_active();
-            *draw_mode.borrow_mut() = on;
-            area.set_cursor_from_name(Some(if on { "crosshair" } else { "grab" }));
+        button.connect_toggled(move |button| {
+            if button.is_active() {
+                for other in &others {
+                    if let Some(other) = other.upgrade() {
+                        other.set_active(false);
+                    }
+                }
+                *tool.borrow_mut() = selected;
+            } else if *tool.borrow() == selected {
+                *tool.borrow_mut() = ViewerTool::Pan;
+            }
+            active_stroke.borrow_mut().take();
+            active_drag.borrow_mut().take();
+            *fast_paint.borrow_mut() = false;
+            area.set_cursor_from_name(Some(if *tool.borrow() == ViewerTool::Pan {
+                "grab"
+            } else {
+                "crosshair"
+            }));
+            area.queue_draw();
         });
     }
     {
@@ -1186,7 +1243,11 @@ pub(super) fn append_image_viewer(
         let strokes = strokes.clone();
         let area = area.clone();
         let refresh = refresh_edit_btns.clone();
+        let active_stroke = active_stroke.clone();
+        let active_drag = active_drag.clone();
         clear_btn.connect_clicked(move |_| {
+            active_stroke.borrow_mut().take();
+            active_drag.borrow_mut().take();
             strokes.borrow_mut().clear();
             refresh();
             area.queue_draw();
@@ -1202,12 +1263,7 @@ pub(super) fn append_image_viewer(
             let out = if strokes.borrow().is_empty() {
                 std::path::PathBuf::from(&src_path)
             } else {
-                let packed: Vec<_> = strokes
-                    .borrow()
-                    .iter()
-                    .map(|st| (st.color, st.width, st.points.clone()))
-                    .collect();
-                match export_annotated_image(pixbuf.as_ref(), &packed, &s.data_dir) {
+                match export_annotated_image(pixbuf.as_ref(), &strokes.borrow(), &s.data_dir) {
                     Ok(p) => p,
                     Err(e) => {
                         toast(
@@ -1265,12 +1321,11 @@ pub(super) fn append_image_viewer(
     }
     area.add_controller(scroll_ctl);
 
-    // Drag: pan when browsing, draw when edit mode is on.
     let drag = gtk::GestureDrag::new();
     drag.set_button(1);
     {
-        let draw_mode = draw_mode.clone();
-        let pan_origin = pan_origin.clone();
+        let tool = tool.clone();
+        let active_drag = active_drag.clone();
         let offset = offset.clone();
         let active_stroke = active_stroke.clone();
         let brush_color = brush_color.clone();
@@ -1279,86 +1334,207 @@ pub(super) fn append_image_viewer(
         let area = area.clone();
         let fast_paint = fast_paint.clone();
         drag.connect_drag_begin(move |gesture, x, y| {
-            if *draw_mode.borrow() {
-                let z = (*zoom.borrow()).max(0.01);
-                let (ox, oy) = *offset.borrow();
-                let color = *brush_color.borrow();
-                let width = (*brush_width.borrow() / z).max(1.0);
-                *active_stroke.borrow_mut() = Some(Stroke {
-                    color,
-                    width,
-                    points: vec![((x - ox) / z, (y - oy) / z)],
-                });
-                area.set_cursor_from_name(Some("crosshair"));
-            } else {
-                *pan_origin.borrow_mut() = *offset.borrow();
+            let selected = *tool.borrow();
+            let origin = *offset.borrow();
+            if selected == ViewerTool::Pan {
+                *active_drag.borrow_mut() = Some(ViewerDrag::Pan { origin });
                 *fast_paint.borrow_mut() = true;
                 area.set_cursor_from_name(Some("grabbing"));
+            } else {
+                let z = (*zoom.borrow()).max(0.01);
+                let start = ((x - origin.0) / z, (y - origin.1) / z);
+                *active_stroke.borrow_mut() = Some(Annotation {
+                    color: *brush_color.borrow(),
+                    width: (*brush_width.borrow() / z).max(1.0),
+                    geometry: match selected {
+                        ViewerTool::Freehand => AnnotationGeometry::Freehand(vec![start]),
+                        ViewerTool::Rectangle => {
+                            AnnotationGeometry::Rectangle { start, end: start }
+                        }
+                        ViewerTool::Circle => AnnotationGeometry::Circle { start, end: start },
+                        ViewerTool::Pan => unreachable!(),
+                    },
+                });
+                *active_drag.borrow_mut() = Some(ViewerDrag::Draw { start, zoom: z });
             }
+            area.queue_draw();
             gesture.set_state(gtk::EventSequenceState::Claimed);
         });
     }
-    {
-        let draw_mode = draw_mode.clone();
-        let pan_origin = pan_origin.clone();
-        let offset = offset.clone();
+    let update_drag = {
+        let active_drag = active_drag.clone();
         let active_stroke = active_stroke.clone();
-        let zoom = zoom.clone();
+        let offset = offset.clone();
         let area = area.clone();
-        drag.connect_drag_update(move |gesture, _x, _y| {
-            let Some((dx, dy)) = gesture.offset() else {
-                return;
-            };
-            let Some((sx, sy)) = gesture.start_point() else {
-                return;
-            };
-            if *draw_mode.borrow() {
-                let z = (*zoom.borrow()).max(0.01);
-                let (ox, oy) = *offset.borrow();
-                if let Some(stroke) = active_stroke.borrow_mut().as_mut() {
-                    stroke.points.push(((sx + dx - ox) / z, (sy + dy - oy) / z));
+        Rc::new(move |dx: f64, dy: f64| {
+            match *active_drag.borrow() {
+                Some(ViewerDrag::Pan { origin }) => {
+                    *offset.borrow_mut() = (origin.0 + dx, origin.1 + dy)
                 }
-                area.queue_draw();
-            } else {
-                let (ox, oy) = *pan_origin.borrow();
-                *offset.borrow_mut() = (ox + dx, oy + dy);
-                area.queue_draw();
+                Some(ViewerDrag::Draw { start, zoom }) => {
+                    if let Some(annotation) = active_stroke.borrow_mut().as_mut() {
+                        annotation.update_end((start.0 + dx / zoom, start.1 + dy / zoom));
+                    }
+                }
+                None => {}
             }
-        });
+            area.queue_draw();
+        })
+    };
+    {
+        let update_drag = update_drag.clone();
+        drag.connect_drag_update(move |_, dx, dy| update_drag(dx, dy));
     }
     {
-        let draw_mode = draw_mode.clone();
+        let active_drag = active_drag.clone();
         let active_stroke = active_stroke.clone();
         let strokes = strokes.clone();
         let area = area.clone();
+        let tool = tool.clone();
         let refresh = refresh_edit_btns.clone();
         let fast_paint = fast_paint.clone();
-        drag.connect_drag_end(move |_, _x, _y| {
-            if *draw_mode.borrow() {
-                if let Some(stroke) = active_stroke.borrow_mut().take()
-                    && !stroke.points.is_empty()
-                {
-                    strokes.borrow_mut().push(stroke);
-                    refresh();
-                }
-                area.set_cursor_from_name(Some("crosshair"));
-            } else {
-                *fast_paint.borrow_mut() = false;
-                area.set_cursor_from_name(Some("grab"));
+        drag.connect_drag_end(move |_, dx, dy| {
+            update_drag(dx, dy);
+            active_drag.borrow_mut().take();
+            if let Some(annotation) = active_stroke.borrow_mut().take()
+                && annotation.is_drawable()
+            {
+                strokes.borrow_mut().push(annotation);
+                refresh();
             }
+            *fast_paint.borrow_mut() = false;
+            area.set_cursor_from_name(Some(if *tool.borrow() == ViewerTool::Pan {
+                "grab"
+            } else {
+                "crosshair"
+            }));
+            area.queue_draw();
+        });
+    }
+    {
+        let active_drag = active_drag.clone();
+        let active_stroke = active_stroke.clone();
+        let area = area.clone();
+        let tool = tool.clone();
+        let fast_paint = fast_paint.clone();
+        drag.connect_cancel(move |_, _| {
+            active_drag.borrow_mut().take();
+            active_stroke.borrow_mut().take();
+            *fast_paint.borrow_mut() = false;
+            area.set_cursor_from_name(Some(if *tool.borrow() == ViewerTool::Pan {
+                "grab"
+            } else {
+                "crosshair"
+            }));
             area.queue_draw();
         });
     }
     area.add_controller(drag);
 
     body.append(&area);
+    Some(copy_keys)
 }
 
-pub(super) type PackedStroke = ((f64, f64, f64, f64), f64, Vec<(f64, f64)>);
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ViewerTool {
+    Pan,
+    Freehand,
+    Rectangle,
+    Circle,
+}
+
+#[derive(Clone, Copy)]
+enum ViewerDrag {
+    Pan { origin: (f64, f64) },
+    Draw { start: (f64, f64), zoom: f64 },
+}
+
+#[derive(Clone)]
+pub(super) struct Annotation {
+    color: (f64, f64, f64, f64),
+    width: f64,
+    geometry: AnnotationGeometry,
+}
+
+#[derive(Clone)]
+enum AnnotationGeometry {
+    Freehand(Vec<(f64, f64)>),
+    Rectangle { start: (f64, f64), end: (f64, f64) },
+    Circle { start: (f64, f64), end: (f64, f64) },
+}
+
+impl Annotation {
+    fn update_end(&mut self, point: (f64, f64)) {
+        match &mut self.geometry {
+            AnnotationGeometry::Freehand(points) => {
+                if points.last() != Some(&point) {
+                    points.push(point);
+                }
+            }
+            AnnotationGeometry::Rectangle { end, .. } | AnnotationGeometry::Circle { end, .. } => {
+                *end = point
+            }
+        }
+    }
+
+    fn is_drawable(&self) -> bool {
+        match &self.geometry {
+            AnnotationGeometry::Freehand(points) => !points.is_empty(),
+            AnnotationGeometry::Rectangle { start, end } => start.0 != end.0 && start.1 != end.1,
+            AnnotationGeometry::Circle { start, end } => start != end,
+        }
+    }
+}
+
+fn paint_annotation(cr: &cairo::Context, annotation: &Annotation) -> Result<(), cairo::Error> {
+    if !annotation.is_drawable() {
+        return Ok(());
+    }
+    let (r, g, b, a) = annotation.color;
+    cr.set_source_rgba(r, g, b, a);
+    cr.set_line_width(annotation.width);
+    cr.set_line_cap(cairo::LineCap::Round);
+    cr.set_line_join(cairo::LineJoin::Round);
+    cr.new_path();
+    match &annotation.geometry {
+        AnnotationGeometry::Freehand(points) => {
+            cr.move_to(points[0].0, points[0].1);
+            for &(x, y) in points.iter().skip(1) {
+                cr.line_to(x, y);
+            }
+            if points.len() == 1 {
+                cr.line_to(points[0].0 + 0.01, points[0].1);
+            }
+        }
+        AnnotationGeometry::Rectangle { start, end } => {
+            cr.rectangle(
+                start.0.min(end.0),
+                start.1.min(end.1),
+                (end.0 - start.0).abs(),
+                (end.1 - start.1).abs(),
+            );
+        }
+        AnnotationGeometry::Circle { start, end } => {
+            let dx = end.0 - start.0;
+            let dy = end.1 - start.1;
+            let side = dx.abs().max(dy.abs());
+            let x = if dx < 0.0 { start.0 - side } else { start.0 };
+            let y = if dy < 0.0 { start.1 - side } else { start.1 };
+            cr.arc(
+                x + side / 2.0,
+                y + side / 2.0,
+                side / 2.0,
+                0.0,
+                std::f64::consts::TAU,
+            );
+        }
+    }
+    cr.stroke()
+}
 
 fn render_annotated_image(
     pixbuf: &gdk_pixbuf::Pixbuf,
-    strokes: &[PackedStroke],
+    strokes: &[Annotation],
 ) -> anyhow::Result<cairo::ImageSurface> {
     let w = pixbuf.width().max(1);
     let h = pixbuf.height().max(1);
@@ -1368,23 +1544,8 @@ fn render_annotated_image(
     gdk::prelude::GdkCairoContextExt::set_source_pixbuf(&cr, pixbuf, 0.0, 0.0);
     cr.paint().map_err(|e| anyhow::anyhow!("paint: {e}"))?;
 
-    for (color, width, points) in strokes {
-        if points.is_empty() {
-            continue;
-        }
-        let (r, g, b, a) = *color;
-        cr.set_source_rgba(r, g, b, a);
-        cr.set_line_width(*width);
-        cr.set_line_cap(cairo::LineCap::Round);
-        cr.set_line_join(cairo::LineJoin::Round);
-        cr.move_to(points[0].0, points[0].1);
-        for &(x, y) in points.iter().skip(1) {
-            cr.line_to(x, y);
-        }
-        if points.len() == 1 {
-            cr.line_to(points[0].0 + 0.01, points[0].1);
-        }
-        cr.stroke().map_err(|e| anyhow::anyhow!("stroke: {e}"))?;
+    for annotation in strokes {
+        paint_annotation(&cr, annotation)?;
     }
 
     Ok(surface)
@@ -1392,7 +1553,7 @@ fn render_annotated_image(
 
 fn image_clipboard_texture(
     pixbuf: &gdk_pixbuf::Pixbuf,
-    strokes: &[PackedStroke],
+    strokes: &[Annotation],
 ) -> anyhow::Result<gdk::Texture> {
     if strokes.is_empty() {
         return Ok(gdk::Texture::for_pixbuf(pixbuf));
@@ -1405,7 +1566,7 @@ fn image_clipboard_texture(
 
 pub(super) fn export_annotated_image(
     pixbuf: &gdk_pixbuf::Pixbuf,
-    strokes: &[PackedStroke],
+    strokes: &[Annotation],
     data_dir: &std::path::Path,
 ) -> anyhow::Result<PathBuf> {
     let surface = render_annotated_image(pixbuf, strokes)?;
@@ -2461,7 +2622,7 @@ mod image_copy_tests {
         pixbuf
     }
 
-    fn rendered(pixbuf: &gdk_pixbuf::Pixbuf, strokes: &[PackedStroke]) -> image::RgbaImage {
+    fn rendered(pixbuf: &gdk_pixbuf::Pixbuf, strokes: &[Annotation]) -> image::RgbaImage {
         let mut png = Vec::new();
         render_annotated_image(pixbuf, strokes)
             .unwrap()
@@ -2477,12 +2638,90 @@ mod image_copy_tests {
         let original = rendered(&pixbuf, &[]);
         assert_eq!(original.dimensions(), (32, 24));
         assert_eq!(original.get_pixel(0, 0).0, [32, 64, 128, 128]);
-        let strokes = vec![((1.0, 0.0, 0.0, 1.0), 4.0, vec![(4.0, 10.0), (28.0, 10.0)])];
+        let strokes = vec![Annotation {
+            color: (1.0, 0.0, 0.0, 1.0),
+            width: 4.0,
+            geometry: AnnotationGeometry::Freehand(vec![(4.0, 10.0), (28.0, 10.0)]),
+        }];
         let edited = rendered(&pixbuf, &strokes);
         assert_eq!(edited.dimensions(), (32, 24));
         assert_eq!(edited.get_pixel(16, 10).0, [255, 0, 0, 255]);
         assert_eq!(edited.get_pixel(0, 0), original.get_pixel(0, 0));
         assert_eq!(pixbuf.read_pixel_bytes(), before);
+    }
+
+    fn outline(geometry: AnnotationGeometry) -> Annotation {
+        Annotation {
+            color: (1.0, 0.0, 0.0, 1.0),
+            width: 2.0,
+            geometry,
+        }
+    }
+
+    #[test]
+    fn rectangle_and_circle_are_unfilled_exact_outlines_in_every_drag_direction() {
+        let pixbuf = source();
+        let before = pixbuf.read_pixel_bytes();
+        let original = rendered(&pixbuf, &[]);
+        let rectangle = |start, end| outline(AnnotationGeometry::Rectangle { start, end });
+        let expected = rendered(&pixbuf, &[rectangle((4.0, 4.0), (20.0, 20.0))]);
+        for (start, end) in [
+            ((4.0, 4.0), (20.0, 20.0)),
+            ((20.0, 20.0), (4.0, 4.0)),
+            ((4.0, 20.0), (20.0, 4.0)),
+            ((20.0, 4.0), (4.0, 20.0)),
+        ] {
+            assert_eq!(rendered(&pixbuf, &[rectangle(start, end)]), expected);
+        }
+        for (x, y) in [(4, 12), (20, 12), (12, 4), (12, 20)] {
+            assert_eq!(expected.get_pixel(x, y).0, [255, 0, 0, 255]);
+        }
+        assert_eq!(expected.get_pixel(12, 12), original.get_pixel(12, 12));
+        let circle = |start, end| outline(AnnotationGeometry::Circle { start, end });
+        let round = rendered(&pixbuf, &[circle((4.0, 4.0), (20.0, 12.0))]);
+        for (start, end) in [
+            ((20.0, 20.0), (4.0, 12.0)),
+            ((4.0, 20.0), (20.0, 12.0)),
+            ((20.0, 4.0), (4.0, 12.0)),
+        ] {
+            assert_eq!(rendered(&pixbuf, &[circle(start, end)]), round);
+        }
+        for (x, y) in [(4, 12), (19, 12), (12, 4), (12, 19)] {
+            assert!(round.get_pixel(x, y).0[0] > 200);
+        }
+        for (x, y) in [(12, 12), (4, 4), (20, 20), (0, 0)] {
+            assert_eq!(round.get_pixel(x, y), original.get_pixel(x, y));
+        }
+        assert_eq!(round.dimensions(), (32, 24));
+        for geometry in [
+            AnnotationGeometry::Circle {
+                start: (4.0, 4.0),
+                end: (4.0, 4.0),
+            },
+            AnnotationGeometry::Rectangle {
+                start: (4.0, 4.0),
+                end: (4.0, 20.0),
+            },
+        ] {
+            assert_eq!(rendered(&pixbuf, &[outline(geometry)]), original);
+        }
+        let temp = std::env::temp_dir().join(format!("line-shape-export-{}", std::process::id()));
+        let annotations = [circle((4.0, 4.0), (20.0, 12.0))];
+        let file = export_annotated_image(&pixbuf, &annotations, &temp).unwrap();
+        assert_eq!(image::open(file).unwrap().into_rgba8(), round);
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 32, 24).unwrap();
+        let cr = cairo::Context::new(&surface).unwrap();
+        gdk::prelude::GdkCairoContextExt::set_source_pixbuf(&cr, &pixbuf, 0.0, 0.0);
+        cr.paint().unwrap();
+        paint_annotation(&cr, &annotations[0]).unwrap();
+        let mut preview = Vec::new();
+        surface.write_to_png(&mut preview).unwrap();
+        assert_eq!(
+            image::load_from_memory(&preview).unwrap().into_rgba8(),
+            round
+        );
+        assert_eq!(pixbuf.read_pixel_bytes(), before);
+        std::fs::remove_dir_all(temp).unwrap();
     }
 
     #[test]
@@ -2599,6 +2838,94 @@ mod image_copy_tests {
         );
         assert!(handled);
         assert_eq!(read(), original);
+        button("zoom-out-symbolic").emit_clicked();
+        let shape_button = |label: &str| {
+            buttons
+                .iter()
+                .filter_map(|w| w.clone().downcast::<gtk::ToggleButton>().ok())
+                .find(|b| b.label().as_deref() == Some(label))
+                .unwrap()
+        };
+        let rectangle = shape_button("□");
+        let circle = shape_button("○");
+        rectangle.set_active(true);
+        assert!(!draw.is_active());
+        drag.emit_by_name::<()>("drag-begin", &[&4.0_f64, &4.0_f64]);
+        drag.emit_by_name::<()>("drag-update", &[&12.0_f64, &12.0_f64]);
+        copy.emit_clicked();
+        let preview = read();
+        assert_ne!(preview.get_pixel(16, 10), original.get_pixel(16, 10));
+        assert_eq!(preview.get_pixel(10, 10), original.get_pixel(10, 10));
+        drag.emit_by_name::<()>("drag-end", &[&20.0_f64, &16.0_f64]);
+        copy.emit_clicked();
+        let completed = read();
+        assert_ne!(completed.get_pixel(24, 10), original.get_pixel(24, 10));
+        assert_ne!(completed, preview);
+        button("edit-undo-symbolic").emit_clicked();
+        copy.emit_clicked();
+        assert_eq!(read(), original);
+        circle.set_active(true);
+        assert!(!rectangle.is_active());
+        let green = buttons
+            .iter()
+            .filter_map(|w| w.clone().downcast::<gtk::Button>().ok())
+            .find(|b| b.has_css_class("line-draw-c-green"))
+            .unwrap();
+        green.emit_clicked();
+        assert!(circle.is_active());
+        assert!(!draw.is_active());
+        drag.emit_by_name::<()>("drag-begin", &[&4.0_f64, &4.0_f64]);
+        button("zoom-in-symbolic").emit_clicked();
+        drag.emit_by_name::<()>("drag-end", &[&16.0_f64, &8.0_f64]);
+        copy.emit_clicked();
+        let round = read();
+        assert!(round.get_pixel(12, 4).0[1] > 140);
+        assert_eq!(round.get_pixel(12, 12), original.get_pixel(12, 12));
+        let expected = rendered(
+            &source(),
+            &[Annotation {
+                color: (0.26, 0.63, 0.28, 1.0),
+                width: 6.0,
+                geometry: AnnotationGeometry::Circle {
+                    start: (4.0, 4.0),
+                    end: (20.0, 12.0),
+                },
+            }],
+        );
+        assert_eq!(round, expected);
+        button("edit-clear-all-symbolic").emit_clicked();
+        circle.set_active(false);
+        drag.emit_by_name::<()>("drag-begin", &[&0.0_f64, &0.0_f64]);
+        drag.emit_by_name::<()>("drag-end", &[&10.0_f64, &5.0_f64]);
+        rectangle.set_active(true);
+        drag.emit_by_name::<()>("drag-begin", &[&15.0_f64, &10.0_f64]);
+        drag.emit_by_name::<()>("drag-end", &[&20.0_f64, &15.0_f64]);
+        copy.emit_clicked();
+        let expected = rendered(
+            &source(),
+            &[Annotation {
+                color: (0.26, 0.63, 0.28, 1.0),
+                width: 4.8,
+                geometry: AnnotationGeometry::Rectangle {
+                    start: (4.0, 4.0),
+                    end: (20.0, 16.0),
+                },
+            }],
+        );
+        assert_eq!(read(), expected);
+        button("edit-clear-all-symbolic").emit_clicked();
+        drag.emit_by_name::<()>("drag-begin", &[&15.0_f64, &10.0_f64]);
+        drag.emit_by_name::<()>("drag-update", &[&10.0_f64, &10.0_f64]);
+        circle.set_active(true);
+        drag.emit_by_name::<()>("drag-end", &[&20.0_f64, &15.0_f64]);
+        copy.emit_clicked();
+        assert_eq!(read(), original);
+        assert!(!button("edit-undo-symbolic").is_sensitive());
+        drag.emit_by_name::<()>("drag-begin", &[&15.0_f64, &10.0_f64]);
+        drag.emit_by_name::<()>("drag-end", &[&0.0_f64, &0.0_f64]);
+        copy.emit_clicked();
+        assert_eq!(read(), original);
+        assert!(!button("edit-undo-symbolic").is_sensitive());
         assert_eq!(std::fs::read(&path).unwrap(), original_file);
         assert!(!data.join("cache/media").exists());
         assert!(!requests.exists() || std::fs::read_to_string(&requests).unwrap().is_empty());

@@ -108,6 +108,7 @@ pub(super) struct AppState {
     pub sidebar_compact: Rc<RefCell<bool>>,
     pub composer_narrow: Rc<RefCell<bool>>,
     pub mic_btn: gtk::Button,
+    pub capture_btn: gtk::Button,
     pub attach_btn: gtk::Button,
     pub sticker_btn: gtk::Button,
     pub sticker_popover: gtk::Popover,

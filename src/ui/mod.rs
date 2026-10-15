@@ -19,6 +19,8 @@ mod login;
 mod media;
 mod messages;
 mod notifications;
+mod qr;
+mod screen_capture;
 mod sender_avatars;
 mod settings;
 mod shell;
@@ -211,6 +213,7 @@ fn build_state(
         sidebar_compact: Rc::new(RefCell::new(false)),
         composer_narrow: Rc::new(RefCell::new(false)),
         mic_btn: shell.mic_btn,
+        capture_btn: shell.capture_btn,
         attach_btn: shell.attach_btn,
         sticker_btn: shell.sticker_btn,
         sticker_popover: shell.sticker_popover,
@@ -1073,6 +1076,9 @@ fn apply_ui_language(state: &AppState) {
         .mic_btn
         .set_tooltip_text(Some(&crate::i18n::t("voice_message")));
     state
+        .capture_btn
+        .set_tooltip_text(Some(&crate::i18n::t("screen_capture")));
+    state
         .record_cancel_btn
         .set_tooltip_text(Some(&crate::i18n::t("voice_cancel")));
     state
@@ -1584,6 +1590,11 @@ fn wire_actions(state: &AppState) {
         .connect_search_changed(move |entry| {
             filter_chats(&s, &entry.text());
         });
+
+    let s = state.clone();
+    state.capture_btn.connect_clicked(move |_| {
+        screen_capture::start(&s);
+    });
 
     let s = state.clone();
     state.mic_btn.connect_clicked(move |_| {

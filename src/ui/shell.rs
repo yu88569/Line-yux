@@ -42,6 +42,7 @@ pub struct ShellWidgets {
     pub compact_search_btn: gtk::Button,
     pub compact_search_entry: gtk::SearchEntry,
     pub mic_btn: gtk::Button,
+    pub capture_btn: gtk::Button,
     pub attach_btn: gtk::Button,
     pub sticker_btn: gtk::Button,
     pub call_btn: gtk::Button,
@@ -409,6 +410,12 @@ pub fn build_shell_page() -> ShellWidgets {
         .valign(gtk::Align::Center)
         .css_classes(["flat", "circular", "line-composer-icon"])
         .build();
+    let capture_btn = gtk::Button::builder()
+        .icon_name("camera-photo-symbolic")
+        .tooltip_text(crate::i18n::t("screen_capture"))
+        .valign(gtk::Align::Center)
+        .css_classes(["flat", "circular", "line-composer-icon"])
+        .build();
     let send_btn = gtk::Button::builder()
         .label(crate::i18n::t("send"))
         .valign(gtk::Align::Center)
@@ -417,6 +424,7 @@ pub fn build_shell_page() -> ShellWidgets {
     composer_row.append(&attach_btn);
     composer_row.append(&sticker_btn);
     composer_row.append(&mic_btn);
+    composer_row.append(&capture_btn);
     composer_row.append(&composer);
     composer_row.append(&send_btn);
 
@@ -597,6 +605,7 @@ pub fn build_shell_page() -> ShellWidgets {
         compact_search_btn,
         compact_search_entry,
         mic_btn,
+        capture_btn,
         attach_btn,
         sticker_btn,
         call_btn,

@@ -27,6 +27,7 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 | GTK4 + Libadwaita | `pacman -S gtk4 libadwaita` |
 | Deno | Build-time protocol compiler; source-tree runs use `deno` or `DENO` |
 | ffmpeg / ffprobe | voice record, video thumbs |
+| grim + slurp (optional) | screen area capture on supported Wayland compositors |
 | Optional | `pdftoppm`, `pdftotext` for PDF preview |
 
 Wayland and X11 both work. Tested mainly on Arch-based desktops.
@@ -84,3 +85,7 @@ Protocol and E2EE talk to LINE through [linejs](https://github.com/evex-dev/line
 ## License
 
 [GPL-3.0-or-later](LICENSE)
+
+The Capture button beside the voice message button lets you select a screen area while LINE GTK and its image viewers remain visible, then opens the screenshot in the image viewer. Press Escape to cancel selection. Capture requires a Wayland compositor supported by grim and the `grim` and `slurp` programs on the host. Flatpak capture is not currently supported. Screenshots stay local until you explicitly queue and send them.
+
+Use Read QR in the image viewer to read QR codes from the original image. Results support text copying and explicitly opening HTTP or HTTPS links. Links never open automatically.

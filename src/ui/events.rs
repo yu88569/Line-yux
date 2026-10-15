@@ -502,7 +502,11 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             if !ok {
                 match pending.as_ref() {
                     Some(Pending::AlbumPage(ui)) => {
-                        albums::page_failed(ui, error.as_deref().unwrap_or("Album unavailable"));
+                        albums::page_failed(
+                            state,
+                            ui,
+                            error.as_deref().unwrap_or("Album unavailable"),
+                        );
                         return;
                     }
                     Some(Pending::AlbumPhoto {

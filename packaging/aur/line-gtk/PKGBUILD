@@ -8,6 +8,8 @@ url='https://github.com/MidnightTale/Line-GTK'
 license=('GPL-3.0-or-later')
 depends=('gtk4' 'libadwaita' 'ffmpeg' 'hicolor-icon-theme')
 optdepends=(
+  'grim: screen area capture on supported Wayland compositors'
+  'slurp: interactive screen area selection'
   'poppler: PDF preview in media viewer'
   'gst-plugins-good: extra video playback codecs'
   'gst-libav: extra video playback codecs'
