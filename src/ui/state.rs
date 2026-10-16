@@ -143,6 +143,8 @@ pub(super) struct AppState {
     pub self_picture_url: Rc<RefCell<Option<String>>>,
     pub msg_list_fp: Rc<RefCell<Option<MessageListFingerprint>>>,
     pub notif_pending: Rc<RefCell<HashMap<String, PendingNotif>>>,
+    pub saved_attachments: Rc<RefCell<super::downloads::SavedAttachments>>,
+    pub saved_attachment_buttons: Rc<RefCell<HashMap<String, Vec<glib::WeakRef<gtk::Button>>>>>,
     pub media_ready_paths: Rc<RefCell<HashMap<String, String>>>,
 }
 

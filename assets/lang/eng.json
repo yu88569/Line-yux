@@ -367,6 +367,8 @@
   "restore_chat": "Restore",
   "chat_pinned_status": "Pinned chat",
   "chat_muted_status": "Chat notifications muted",
+  "file_open_folder": "Open folder",
+  "file_folder_missing": "The saved folder no longer exists",
   "file_save": "Save",
   "file_save_as": "Save as…",
   "file_share": "Share to chat",

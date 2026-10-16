@@ -343,7 +343,13 @@ fn open_item(state: &AppState, ui: &AlbumGallery, index: usize) {
     }
     if item.photo.kind == AlbumMediaKind::Video {
         if let Download::Ready(path) = item.download {
-            open_media_viewer(state, &path, "VIDEO", &format!("{}.mp4", item.photo.oid));
+            open_media_viewer(
+                state,
+                &path,
+                "VIDEO",
+                &format!("{}.mp4", item.photo.oid),
+                None,
+            );
         }
         return;
     }
@@ -487,6 +493,7 @@ fn refresh_viewer(state: &AppState, ui: &AlbumGallery) {
                 "IMAGE",
                 &format!("{}.jpg", item.photo.oid),
                 Some(&navigation),
+                None,
             );
         } else {
             let root = gtk::Box::new(gtk::Orientation::Vertical, 12);

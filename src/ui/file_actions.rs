@@ -1,7 +1,8 @@
 use super::*;
 
 pub(super) fn build_media_actions(state: &AppState, msg: &MessageInfo) -> gtk::Box {
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let actions = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     actions.add_css_class("line-file-actions");
     for (label, action) in [("file_save", "file_save"), ("file_save_as", "file_save_as")] {
         let button = gtk::Button::with_label(&crate::i18n::t(label));
@@ -10,15 +11,55 @@ pub(super) fn build_media_actions(state: &AppState, msg: &MessageInfo) -> gtk::B
         let s = state.clone();
         let msg = msg.clone();
         button.connect_clicked(move |_| request_media_download(&s, &msg, action));
-        actions.append(&button);
+        row.append(&button);
     }
     let share = gtk::Button::with_label(&crate::i18n::t("file_share"));
     share.add_css_class("flat");
     share.add_css_class("caption");
     let s = state.clone();
-    let msg = msg.clone();
-    share.connect_clicked(move |_| open_share_picker(&s, &msg));
-    actions.append(&share);
+    let share_msg = msg.clone();
+    share.connect_clicked(move |_| open_share_picker(&s, &share_msg));
+    row.append(&share);
+    actions.append(&row);
+    let open = gtk::Button::with_label(&crate::i18n::t("file_open_folder"));
+    open.add_css_class("flat");
+    open.add_css_class("caption");
+    open.set_halign(gtk::Align::Start);
+    open.set_visible(
+        state
+            .saved_attachments
+            .borrow()
+            .destination(&msg.id)
+            .is_some(),
+    );
+    let mut observers = state.saved_attachment_buttons.borrow_mut();
+    observers.retain(|_, buttons| {
+        buttons.retain(|button| button.upgrade().is_some());
+        !buttons.is_empty()
+    });
+    observers
+        .entry(msg.id.clone())
+        .or_default()
+        .push(open.downgrade());
+    drop(observers);
+    let s = state.clone();
+    let id = msg.id.clone();
+    open.connect_clicked(move |_| {
+        let folder = s
+            .saved_attachments
+            .borrow()
+            .destination(&id)
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf);
+        if let Some(folder) = folder {
+            if folder.is_dir() {
+                open_path_externally(&folder.to_string_lossy());
+            } else {
+                toast(&s, &crate::i18n::t("file_folder_missing"));
+            }
+        }
+    });
+    actions.append(&open);
     actions
 }
 

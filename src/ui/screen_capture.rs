@@ -115,7 +115,7 @@ fn start_with_tools(state: &AppState, tools: CaptureTools) {
         s.capture_btn.set_sensitive(true);
         match result {
             Ok(Ok(CaptureOutcome::Captured(path))) => {
-                open_media_viewer(&s, &path.to_string_lossy(), "IMAGE", "capture.png");
+                open_media_viewer(&s, &path.to_string_lossy(), "IMAGE", "capture.png", None);
             }
             Ok(Ok(CaptureOutcome::Cancelled)) => {
                 s.status.set_text(&crate::i18n::t("capture_cancelled"));
@@ -472,12 +472,12 @@ mod tests {
         let viewer = MediaViewer::new(&state);
         let path = dir.join("source.png");
         let path = path.to_str().unwrap();
-        viewer.show(&state, path, "IMAGE", "qr.png", None);
+        viewer.show(&state, path, "IMAGE", "qr.png", None, None);
         viewer.window.present();
         pump_until(|| viewer.window.is_mapped());
         let old = qr_button(&viewer.window);
         old.emit_clicked();
-        viewer.show(&state, path, "IMAGE", "replacement.png", None);
+        viewer.show(&state, path, "IMAGE", "replacement.png", None, None);
         pump_until(|| old.is_sensitive());
         assert!(
             qr_dialog().is_none(),
@@ -497,7 +497,14 @@ mod tests {
             .save(&blank)
             .unwrap();
         let viewer = MediaViewer::new(&state);
-        viewer.show(&state, blank.to_str().unwrap(), "IMAGE", "blank.png", None);
+        viewer.show(
+            &state,
+            blank.to_str().unwrap(),
+            "IMAGE",
+            "blank.png",
+            None,
+            None,
+        );
         viewer.window.present();
         pump_until(|| viewer.window.is_mapped());
         qr_button(&viewer.window).emit_clicked();
@@ -509,14 +516,21 @@ mod tests {
                 .filter_map(|w| w.downcast_ref::<gtk::Label>())
                 .any(|l| l.text() == crate::i18n::t("qr_not_found"))
         );
-        viewer.show(&state, path, "IMAGE", "changed.png", None);
+        viewer.show(&state, path, "IMAGE", "changed.png", None, None);
         pump_until(|| !result.is_visible());
         let plain = dir.join("plain.png");
         let payload = "<b>สวัสดี</b> & text";
         super::super::qr::tests::qr_image(payload)
             .save(&plain)
             .unwrap();
-        viewer.show(&state, plain.to_str().unwrap(), "IMAGE", "plain.png", None);
+        viewer.show(
+            &state,
+            plain.to_str().unwrap(),
+            "IMAGE",
+            "plain.png",
+            None,
+            None,
+        );
         qr_button(&viewer.window).emit_clicked();
         pump_until(|| qr_dialog().is_some());
         let result = qr_dialog().unwrap();

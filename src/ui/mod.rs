@@ -132,6 +132,7 @@ fn build_state(
 
     let (tray_tx, tray_rx) = async_channel::unbounded::<crate::tray::TrayAction>();
 
+    let saved_attachments = Rc::new(RefCell::new(downloads::SavedAttachments::load(&data_dir)));
     let state = AppState {
         app: app.clone(),
         sidecar: sidecar.clone(),
@@ -249,6 +250,8 @@ fn build_state(
         msg_list_fp: Rc::new(RefCell::new(None)),
         notif_pending: Rc::new(RefCell::new(HashMap::new())),
         media_ready_paths: Rc::new(RefCell::new(HashMap::new())),
+        saved_attachments,
+        saved_attachment_buttons: Rc::new(RefCell::new(HashMap::new())),
     };
 
     (state, tray_rx)

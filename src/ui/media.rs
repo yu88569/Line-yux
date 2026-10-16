@@ -303,6 +303,7 @@ pub(super) fn request_media_action(
             &path,
             &suggest_media_name(&msg),
             &msg.content_type,
+            Some(&msg.id),
         );
         return;
     }
@@ -336,10 +337,11 @@ pub(super) fn finish_downloaded_media_action(
     path: &str,
     suggest_name: &str,
     content_type: &str,
+    message_id: Option<&str>,
 ) {
     match action {
         PendingMediaAction::ViewOrSave(action) => {
-            finish_media_action(state, action, path, suggest_name, content_type)
+            finish_media_action(state, action, path, suggest_name, content_type, message_id)
         }
         PendingMediaAction::ShareFile { chat_mid, .. } => {
             file_actions::send_shared_media(state, chat_mid, path, suggest_name, content_type)
@@ -353,6 +355,7 @@ pub(super) fn finish_media_action(
     path: &str,
     suggest_name: &str,
     content_type: &str,
+    message_id: Option<&str>,
 ) {
     let action = if content_type.eq_ignore_ascii_case("FILE")
         && matches!(action, "open_viewer" | "open_external")
@@ -366,7 +369,7 @@ pub(super) fn finish_media_action(
         action
     };
     match action {
-        "open_viewer" => open_media_viewer(state, path, content_type, suggest_name),
+        "open_viewer" => open_media_viewer(state, path, content_type, suggest_name, message_id),
         "open_external" => match prepare_external_attachment(&state.data_dir, path, suggest_name) {
             Ok(prepared) => open_path_externally(&prepared.to_string_lossy()),
             Err(error) => toast(
@@ -377,9 +380,11 @@ pub(super) fn finish_media_action(
                 ),
             ),
         },
-        "save_dialog" => save_media_as(state, path, suggest_name, content_type),
-        "file_save" => save_media_to_default(state, path, suggest_name, content_type),
-        "file_save_as" => show_media_save_dialog(state, path, suggest_name, content_type),
+        "save_dialog" => save_media_as(state, path, suggest_name, content_type, message_id),
+        "file_save" => save_media_to_default(state, path, suggest_name, content_type, message_id),
+        "file_save_as" => {
+            show_media_save_dialog(state, path, suggest_name, content_type, message_id)
+        }
         "play_audio" => {
             if let Err(e) = play_audio_file(path, &state.config.borrow().audio_output) {
                 toast(
@@ -388,13 +393,33 @@ pub(super) fn finish_media_action(
                 );
             }
         }
-        _ => save_media_as(state, path, suggest_name, content_type),
+        _ => save_media_as(state, path, suggest_name, content_type, message_id),
     }
 }
 
-pub(super) fn copy_media_to_dest(state: &AppState, src: &str, dest: &std::path::Path) {
+pub(super) fn copy_media_to_dest(
+    state: &AppState,
+    src: &str,
+    dest: &std::path::Path,
+    message_id: Option<&str>,
+) {
     match std::fs::copy(src, dest) {
         Ok(_) => {
+            if let Some(id) = message_id {
+                if let Err(error) = state.saved_attachments.borrow_mut().record(id, dest) {
+                    tracing::warn!(%error, "failed to persist saved attachment destination");
+                }
+                if let Some(buttons) = state.saved_attachment_buttons.borrow_mut().get_mut(id) {
+                    buttons.retain(|button| {
+                        if let Some(button) = button.upgrade() {
+                            button.set_visible(true);
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                }
+            }
             toast(
                 state,
                 &crate::i18n::tf("media_saved", &[("path", &dest.display().to_string())]),
@@ -408,11 +433,17 @@ pub(super) fn copy_media_to_dest(state: &AppState, src: &str, dest: &std::path::
     }
 }
 
-pub(super) fn save_media_as(state: &AppState, path: &str, suggest_name: &str, content_type: &str) {
+pub(super) fn save_media_as(
+    state: &AppState,
+    path: &str,
+    suggest_name: &str,
+    content_type: &str,
+    message_id: Option<&str>,
+) {
     if state.config.borrow().download_ask_every_time {
-        show_media_save_dialog(state, path, suggest_name, content_type);
+        show_media_save_dialog(state, path, suggest_name, content_type, message_id);
     } else {
-        save_media_to_default(state, path, suggest_name, content_type);
+        save_media_to_default(state, path, suggest_name, content_type, message_id);
     }
 }
 
@@ -421,6 +452,7 @@ pub(super) fn save_media_to_default(
     path: &str,
     suggest_name: &str,
     content_type: &str,
+    message_id: Option<&str>,
 ) {
     let dest_dir = state.config.borrow().download_dir_for(content_type);
     if let Err(e) = std::fs::create_dir_all(&dest_dir) {
@@ -431,7 +463,7 @@ pub(super) fn save_media_to_default(
         return;
     }
     let dest = downloads::unique_download_dest(&dest_dir, suggest_name);
-    copy_media_to_dest(state, path, &dest);
+    copy_media_to_dest(state, path, &dest, message_id);
 }
 
 pub(super) fn show_media_save_dialog(
@@ -439,6 +471,7 @@ pub(super) fn show_media_save_dialog(
     path: &str,
     suggest_name: &str,
     content_type: &str,
+    message_id: Option<&str>,
 ) {
     let configured = state.config.borrow().download_dir_for(content_type);
     let dest_dir = if configured.is_dir() {
@@ -462,6 +495,7 @@ pub(super) fn show_media_save_dialog(
     dialog.set_initial_folder(Some(&gio::File::for_path(&dest_dir)));
     let s = state.clone();
     let src = path.to_string();
+    let message_id = message_id.map(str::to_string);
     dialog.save(
         Some(&state.window),
         None::<&gio::Cancellable>,
@@ -476,7 +510,7 @@ pub(super) fn show_media_save_dialog(
             if let Some(parent) = dest.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            copy_media_to_dest(&s, &src, &dest);
+            copy_media_to_dest(&s, &src, &dest, message_id.as_deref());
         },
     );
 }
@@ -538,6 +572,7 @@ impl MediaViewer {
         content_type: &str,
         suggest_name: &str,
         navigation: Option<&gtk::Box>,
+        message_id: Option<&str>,
     ) {
         self.clear();
         let win = &self.window;
@@ -637,8 +672,9 @@ impl MediaViewer {
             let path = path.to_string();
             let name = suggest_name.to_string();
             let ct = content_type.to_string();
+            let message_id = message_id.map(str::to_string);
             dl.connect_clicked(move |_| {
-                save_media_as(&s, &path, &name, &ct);
+                save_media_as(&s, &path, &name, &ct, message_id.as_deref());
             });
         }
     }
@@ -649,6 +685,7 @@ pub(super) fn open_media_viewer(
     path: &str,
     content_type: &str,
     suggest_name: &str,
+    message_id: Option<&str>,
 ) {
     let viewer = MediaViewer::new(state);
     let (width, height) = match viewer_kind_for(content_type, path, suggest_name) {
@@ -658,7 +695,7 @@ pub(super) fn open_media_viewer(
         _ => (720, 480),
     };
     viewer.window.set_default_size(width, height);
-    viewer.show(state, path, content_type, suggest_name, None);
+    viewer.show(state, path, content_type, suggest_name, None, message_id);
     viewer.window.present();
 }
 

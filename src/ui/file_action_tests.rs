@@ -113,6 +113,7 @@ fn gtk_file_and_image_actions_save_pick_and_share_without_network() {
     state.media_msgs.borrow_mut().insert(msg.id.clone(), fresh);
     let bubble = gtk::Box::new(gtk::Orientation::Vertical, 0);
     append_file_card(&state, &bubble, &msg);
+    assert!(!button(bubble.upcast_ref(), "file_open_folder").is_visible());
     let folder = temp.join("saved");
     state.config.borrow_mut().download_dir_file = folder.to_string_lossy().into_owned();
     state.config.borrow_mut().download_ask_every_time = true;
@@ -120,6 +121,15 @@ fn gtk_file_and_image_actions_save_pick_and_share_without_network() {
     button(bubble.upcast_ref(), "file_save").emit_clicked();
     assert_eq!(std::fs::read(folder.join("รายงาน.xlsx")).unwrap(), b"OK");
     assert_eq!(std::fs::read(folder.join("รายงาน-1.xlsx")).unwrap(), b"OK");
+    assert!(button(bubble.upcast_ref(), "file_open_folder").is_visible());
+    assert_eq!(
+        state.saved_attachments.borrow().destination(&msg.id),
+        Some(folder.join("รายงาน-1.xlsx").as_path())
+    );
+    assert_eq!(
+        downloads::SavedAttachments::load(&state.data_dir).destination(&msg.id),
+        Some(folder.join("รายงาน-1.xlsx").as_path())
+    );
     assert!(requests(&log).is_empty());
 
     state.config.borrow_mut().download_ask_every_time = false;
@@ -145,6 +155,76 @@ fn gtk_file_and_image_actions_save_pick_and_share_without_network() {
     drain();
     assert!(!temp.join("missing/subfolder").exists());
     assert!(!folder.join("รายงาน-2.xlsx").exists());
+    assert_eq!(
+        state.saved_attachments.borrow().destination(&msg.id),
+        Some(folder.join("รายงาน-1.xlsx").as_path())
+    );
+    copy_media_to_dest(
+        &state,
+        temp.join("missing-source").to_str().unwrap(),
+        &temp.join("failed.bin"),
+        Some(&msg.id),
+    );
+    assert_eq!(
+        state.saved_attachments.borrow().destination(&msg.id),
+        Some(folder.join("รายงาน-1.xlsx").as_path())
+    );
+    copy_media_to_dest(
+        &state,
+        temp.join("missing-source").to_str().unwrap(),
+        &temp.join("failed.bin"),
+        Some("never-saved"),
+    );
+    assert!(
+        state
+            .saved_attachments
+            .borrow()
+            .destination("never-saved")
+            .is_none()
+    );
+
+    button(bubble.upcast_ref(), "file_save_as").emit_clicked();
+    let chooser = || {
+        gtk::Window::list_toplevels()
+            .into_iter()
+            .find_map(|widget| {
+                widget
+                    .downcast::<gtk::FileChooserDialog>()
+                    .ok()
+                    .filter(|dialog| dialog.is_visible())
+            })
+    };
+    wait_for(|| chooser().is_some());
+    let chooser = chooser().unwrap();
+    wait_for(|| chooser.current_folder().is_some());
+    let custom = temp.join("custom folder ภาษาไทย");
+    std::fs::create_dir_all(&custom).unwrap();
+    chooser
+        .set_current_folder(Some(&gio::File::for_path(&custom)))
+        .unwrap();
+    wait_for(|| {
+        chooser
+            .current_folder()
+            .and_then(|folder| folder.path())
+            .as_ref()
+            == Some(&custom)
+    });
+    chooser.set_current_name("renamed.xlsx");
+    chooser.response(gtk::ResponseType::Accept);
+    let renamed = custom.join("renamed.xlsx");
+    wait_for(|| renamed.is_file());
+    assert_eq!(std::fs::read(&renamed).unwrap(), b"OK");
+    assert_eq!(
+        state.saved_attachments.borrow().destination(&msg.id),
+        Some(renamed.as_path())
+    );
+    *state.saved_attachments.borrow_mut() = downloads::SavedAttachments::load(&state.data_dir);
+    assert_eq!(
+        state.saved_attachments.borrow().destination(&msg.id),
+        Some(renamed.as_path())
+    );
+    let rebuilt = file_actions::build_media_actions(&state, &msg);
+    assert!(button(rebuilt.upcast_ref(), "file_open_folder").is_visible());
 
     button(bubble.upcast_ref(), "file_share").emit_clicked();
     wait_for(|| share_window().is_some());
@@ -271,6 +351,7 @@ fn gtk_file_and_image_actions_save_pick_and_share_without_network() {
     append_message(&state, &image, false);
     let image_bubble = state.media_slots.borrow().get(&image.id).unwrap().clone();
     assert_image_actions_below_visual(&image_bubble);
+    assert!(!button(image_bubble.upcast_ref(), "file_open_folder").is_visible());
     button(image_bubble.upcast_ref(), "file_save").emit_clicked();
     wait_for(|| requests(&log).len() == 4);
     let download = requests(&log).remove(3);
@@ -283,6 +364,7 @@ fn gtk_file_and_image_actions_save_pick_and_share_without_network() {
         serde_json::json!({"path":full, "fileName":"photo.png", "bytes":original.len()}),
     );
     assert_eq!(std::fs::read(images.join("photo.png")).unwrap(), original);
+    assert!(button(image_bubble.upcast_ref(), "file_open_folder").is_visible());
     assert_ne!(
         std::fs::read(images.join("photo.png")).unwrap(),
         std::fs::read(&preview).unwrap()
@@ -316,6 +398,33 @@ fn gtk_file_and_image_actions_save_pick_and_share_without_network() {
     );
     chooser.response(gtk::ResponseType::Cancel);
     drain();
+    assert_eq!(
+        state.saved_attachments.borrow().destination(&image.id),
+        Some(images.join("photo-1.png").as_path())
+    );
+    request_media_download(&state, &image, "open_viewer");
+    let viewer = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
+        .find(|window| {
+            window.is_visible()
+                && window.title().as_deref() == Some(crate::i18n::t("media_viewer_title").as_str())
+        })
+        .unwrap();
+    let download = descendants(viewer.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| {
+            button.tooltip_text().as_deref() == Some(crate::i18n::t("media_download").as_str())
+        })
+        .unwrap();
+    download.emit_clicked();
+    assert_eq!(std::fs::read(images.join("photo-2.png")).unwrap(), original);
+    assert_eq!(
+        downloads::SavedAttachments::load(&state.data_dir).destination(&image.id),
+        Some(images.join("photo-2.png").as_path())
+    );
+    viewer.close();
     button(image_bubble.upcast_ref(), "file_share").emit_clicked();
     wait_for(|| share_window().is_some());
     let picker = share_window().unwrap();

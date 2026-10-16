@@ -43,6 +43,41 @@ pub fn sanitize_filename(suggested_name: &str) -> String {
     }
 }
 
+pub(super) struct SavedAttachments {
+    registry_path: PathBuf,
+    destinations: std::collections::HashMap<String, PathBuf>,
+}
+
+impl SavedAttachments {
+    pub fn load(data_dir: &Path) -> Self {
+        let registry_path = data_dir.join("saved-attachments.json");
+        let destinations = std::fs::read(&registry_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        Self {
+            registry_path,
+            destinations,
+        }
+    }
+
+    pub fn destination(&self, message_id: &str) -> Option<&Path> {
+        self.destinations.get(message_id).map(PathBuf::as_path)
+    }
+
+    pub fn record(&mut self, message_id: &str, destination: &Path) -> std::io::Result<()> {
+        self.destinations
+            .insert(message_id.to_string(), destination.to_path_buf());
+        let bytes = serde_json::to_vec(&self.destinations)?;
+        if let Some(parent) = self.registry_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let temporary = self.registry_path.with_extension("json.tmp");
+        std::fs::write(&temporary, bytes)?;
+        std::fs::rename(temporary, &self.registry_path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,5 +101,38 @@ mod tests {
             dir.join("photo-1.jpg")
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restores_latest_saved_destination_without_confusing_cached_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "line-saved-attachments-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut saved = SavedAttachments::load(&dir);
+        assert!(saved.destination("cached-only").is_none());
+        saved
+            .record("file-42", &dir.join("Downloads/รายงาน.xlsx"))
+            .unwrap();
+        let latest = dir.join("custom folder/renamed-1.xlsx");
+        saved.record("file-42", &latest).unwrap();
+        saved
+            .record("image-42", &dir.join("Pictures/photo.png"))
+            .unwrap();
+        let restored = SavedAttachments::load(&dir);
+        assert_eq!(restored.destination("file-42"), Some(latest.as_path()));
+        assert_eq!(
+            restored.destination("image-42"),
+            Some(dir.join("Pictures/photo.png").as_path())
+        );
+        assert!(restored.destination("cached-only").is_none());
+        std::fs::write(dir.join("saved-attachments.json"), b"broken json").unwrap();
+        assert!(
+            SavedAttachments::load(&dir)
+                .destination("file-42")
+                .is_none()
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -693,7 +693,14 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                                 append_file_card(state, &bubble, &meta);
                             }
                         }
-                        finish_downloaded_media_action(state, &action, path, &name, &content_type);
+                        finish_downloaded_media_action(
+                            state,
+                            &action,
+                            path,
+                            &name,
+                            &content_type,
+                            Some(&message_id),
+                        );
                     } else {
                         toast(state, &crate::i18n::t("media_download_failed"));
                     }

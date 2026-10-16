@@ -367,6 +367,8 @@
   "restore_chat": "นำแชทกลับมา",
   "chat_pinned_status": "ปักหมุดแชทแล้ว",
   "chat_muted_status": "ปิดการแจ้งเตือนแชทแล้ว",
+  "file_open_folder": "เปิดโฟลเดอร์",
+  "file_folder_missing": "ไม่พบโฟลเดอร์ที่บันทึกไฟล์ไว้",
   "file_save": "บันทึก",
   "file_save_as": "บันทึกเป็น…",
   "file_share": "แชร์ไปที่แชท",
