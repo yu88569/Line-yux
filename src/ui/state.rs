@@ -146,6 +146,8 @@ pub(super) struct AppState {
     pub saved_attachments: Rc<RefCell<super::downloads::SavedAttachments>>,
     pub saved_attachment_buttons: Rc<RefCell<HashMap<String, Vec<glib::WeakRef<gtk::Button>>>>>,
     pub media_ready_paths: Rc<RefCell<HashMap<String, String>>>,
+    pub chat_images: Rc<RefCell<Vec<MessageInfo>>>,
+    pub chat_image_viewers: Rc<RefCell<Vec<super::chat_image_viewer::ChatImageViewer>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +174,10 @@ pub(super) enum Pending {
         photo: crate::protocol::AlbumPhoto,
         picture: gtk::Picture,
         button: gtk::Button,
+    },
+    ChatImageDownload {
+        viewer: std::rc::Weak<super::chat_image_viewer::ChatImageSession>,
+        message_id: String,
     },
     Login,
     ListChats,

@@ -17,6 +17,7 @@ import {
   resolveFileMetadata,
 } from "./file_metadata.ts";
 import * as calls from "./calls.ts";
+import { loadCallDeviceId } from "./call_identity.ts";
 import { createOutgoingMedia } from "./outgoing_media.ts";
 import { createMediaCache } from "./media_cache.ts";
 import { createStickerService } from "./stickers.ts";
@@ -186,10 +187,30 @@ globalThis.addEventListener("unhandledrejection", (ev) => {
 
 let client: Client | null = null;
 let listening = false;
+let callDeviceId: Promise<string> | undefined;
 
 calls.configureCallRuntime({
   getClient: () => client,
   loadAuthDevice,
+  getIncomingIdentity: async () => {
+    const details = client?.base.deviceDetails;
+    if (!details) throw new Error("not_logged_in");
+    callDeviceId ??= loadCallDeviceId(dataDir);
+    return {
+      deviceId: await callDeviceId,
+      userAgent: {
+        osName: details.systemName,
+        osVersion: details.systemVersion,
+        deviceName: "LINE GTK",
+        appReleaseInfo: [
+          details.device,
+          details.appVersion,
+          details.systemName,
+          details.systemVersion,
+        ].join("\t"),
+      },
+    };
+  },
   emitEvent,
   ok,
   fail,
@@ -404,6 +425,7 @@ function bumpMediaEpoch(chatMid: string): number {
 let workGen = 0;
 function cancelBackgroundWork() {
   workGen++;
+  void calls.shutdownCalls();
   for (const mid of [...mediaEpoch.keys()]) {
     bumpMediaEpoch(mid);
   }
@@ -2041,6 +2063,7 @@ async function handle(req: Json) {
       }
       case "logout":
         cancelBackgroundWork();
+        await calls.shutdownCalls();
         stickers.resetOwnedCache();
         try {
           await clearAuth();

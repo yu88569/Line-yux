@@ -294,6 +294,12 @@ pub(super) fn request_media_action(
         .get(&msg.id)
         .cloned()
         .unwrap_or_else(|| msg.clone());
+    if msg.content_type.eq_ignore_ascii_case("IMAGE")
+        && matches!(&action, PendingMediaAction::ViewOrSave(value) if value == "open_viewer")
+    {
+        open_chat_image_viewer(state, &msg);
+        return;
+    }
     let needs_full_media = msg.content_type.eq_ignore_ascii_case("IMAGE")
         || matches!(&action, PendingMediaAction::ViewOrSave(value) if value == "open_viewer");
     if let Some(path) = local_media_path(&msg, needs_full_media) {

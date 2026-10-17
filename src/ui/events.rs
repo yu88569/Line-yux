@@ -525,6 +525,16 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         );
                         return;
                     }
+                    Some(Pending::ChatImageDownload { viewer, message_id }) => {
+                        chat_image_viewer::finish_chat_image_download(
+                            state,
+                            id,
+                            viewer,
+                            message_id,
+                            Err(error.unwrap_or_else(|| crate::i18n::t("media_download_failed"))),
+                        );
+                        return;
+                    }
                     _ => {}
                 }
                 if matches!(pending, Some(Pending::Login)) && *state.restarting.borrow() {
@@ -705,6 +715,23 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         toast(state, &crate::i18n::t("media_download_failed"));
                     }
                 }
+                Some(Pending::ChatImageDownload { viewer, message_id }) => {
+                    let result = match result
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .filter(|p| std::path::Path::new(p).is_file())
+                    {
+                        Some(path) => Ok(path.to_string()),
+                        None => Err(crate::i18n::t("media_download_failed")),
+                    };
+                    chat_image_viewer::finish_chat_image_download(
+                        state,
+                        id,
+                        &viewer,
+                        &message_id,
+                        result,
+                    );
+                }
                 Some(Pending::FetchMessages { .. }) | None => {}
             }
         }
@@ -712,6 +739,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         ProtocolEvent::Exited(code) => {
             *state.session_ready.borrow_mut() = false;
             restore_attachment_requests(state);
+            chat_image_viewer::fail_pending_chat_images(state, &crate::i18n::t("protocol_offline"));
             if !*state.restarting.borrow() {
                 tracing::warn!(code, "protocol engine exited unexpectedly");
                 schedule_sidecar_recovery(state);
@@ -750,6 +778,7 @@ pub(super) fn schedule_sidecar_recovery(state: &AppState) {
 
 pub(super) fn recover_sidecar(state: &AppState) {
     restore_attachment_requests(state);
+    chat_image_viewer::fail_pending_chat_images(state, &crate::i18n::t("protocol_offline"));
     match state.sidecar.recover() {
         Ok(()) => {
             state

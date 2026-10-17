@@ -2,7 +2,9 @@
   "tasks": {
     "sidecar": "deno run --no-prompt --allow-read --allow-write --allow-net --allow-run=ffmpeg,ffprobe --allow-sys --allow-env src/main.ts",
     "dev": "deno run --no-prompt --watch --allow-read --allow-write --allow-net --allow-run=ffmpeg,ffprobe --allow-sys --allow-env src/main.ts",
-    "check": "deno fmt --check && deno lint && deno check src/main.ts && deno test --allow-read --allow-write --allow-env=Q_DEBUG,NODE_DEBUG,LINE_CALL_DEVNAME,LINE_CALL_DEVICE_INFO,LINE_VERSION,LINE_CALL_OPUS_SIGNAL,LINE_GTK_AUDIO_INPUT,LINE_GTK_AUDIO_OUTPUT,LINE_CALL_DEBUG tests/"
+    "check": "deno fmt --check && deno lint && deno check src/main.ts && deno test --allow-read --allow-write --allow-net=127.0.0.1,0.0.0.0 --allow-env=Q_DEBUG,NODE_DEBUG,LINE_CALL_DEVNAME,LINE_CALL_DEVICE_INFO,LINE_VERSION,LINE_CALL_OPUS_SIGNAL,LINE_GTK_AUDIO_INPUT,LINE_GTK_AUDIO_OUTPUT,LINE_CALL_DEBUG tests/",
+    "check:call-audio": "deno run --allow-read --allow-run=ffmpeg scripts/check_call_audio.ts",
+    "check:call-pulse": "deno run --allow-read --allow-run=ffmpeg,pactl scripts/check_call_audio_pulse.ts"
   },
   "lint": {
     "exclude": ["vendor/"],

@@ -14,7 +14,7 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 - [x] In-app viewers (image, video, PDF, text)
 - [x] Downloads, tray, Thai / English, themes
 - [x] Discord RPC
-- [ ] Voice call (WIP)
+- [ ] One-to-one voice calls (experimental, live LINE interoperability unverified)
 - [ ] Account switcher
 
 ---
@@ -66,7 +66,17 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 deno task --config protocol/deno.json check
+deno task --config protocol/deno.json check:call-audio
+deno task --config protocol/deno.json check:call-pulse
 ```
+
+The call tests use an encrypted UDP relay on localhost and real Opus encoding.
+`check:call-audio` runs generated audio through FFmpeg, Opus, and FFmpeg playback
+to a null output. It does not use your microphone or call another account.
+`check:call-pulse` also needs a running PulseAudio-compatible server and `pactl`.
+It checks selected-device routing and generated audio through temporary virtual
+devices, then removes those devices. It does not capture your physical microphone.
+These checks do not establish interoperability with the live LINE service.
 
 ---
 

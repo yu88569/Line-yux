@@ -4,6 +4,7 @@ mod attachment_draft_tests;
 mod attachment_drafts;
 mod call_window;
 mod calls;
+mod chat_image_viewer;
 #[cfg(test)]
 mod chat_tests;
 mod chats;
@@ -33,6 +34,7 @@ use crate::sidecar::Sidecar;
 use anyhow::Result;
 use attachment_drafts::*;
 use calls::*;
+use chat_image_viewer::*;
 use chats::*;
 use composer_media::*;
 use events::*;
@@ -252,6 +254,8 @@ fn build_state(
         media_ready_paths: Rc::new(RefCell::new(HashMap::new())),
         saved_attachments,
         saved_attachment_buttons: Rc::new(RefCell::new(HashMap::new())),
+        chat_images: Rc::new(RefCell::new(Vec::new())),
+        chat_image_viewers: Rc::new(RefCell::new(Vec::new())),
     };
 
     (state, tray_rx)

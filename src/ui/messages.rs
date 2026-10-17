@@ -31,6 +31,21 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
     state.media_queue.borrow_mut().clear();
     *state.stick_bottom.borrow_mut() = true;
     messages.sort_by_key(|m| m.created_time);
+    {
+        let mut chat_images = state.chat_images.borrow_mut();
+        let mut seen = HashSet::new();
+        for msg in &messages {
+            if is_chat_image(msg) && seen.insert(msg.id.clone()) {
+                chat_images.push(msg.clone());
+            }
+            if !msg.id.is_empty() && message_tracks_media(msg) {
+                state
+                    .media_msgs
+                    .borrow_mut()
+                    .insert(msg.id.clone(), msg.clone());
+            }
+        }
+    }
     if let Some(mid) = state.current_chat.borrow().clone() {
         let (len, first, last) = message_list_fingerprint(&messages);
         *state.msg_list_fp.borrow_mut() = Some((mid, len, first, last));
@@ -88,6 +103,17 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
 pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
     if !msg.id.is_empty() && !state.seen_msg_ids.borrow_mut().insert(msg.id.clone()) {
         return;
+    }
+    if is_chat_image(msg) {
+        let mut chat_images = state.chat_images.borrow_mut();
+        if !chat_images.iter().any(|m| m.id == msg.id) {
+            chat_images.push(msg.clone());
+            chat_images.sort_by(|a, b| {
+                a.created_time
+                    .cmp(&b.created_time)
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+        }
     }
 
     // Prefer a path that already finished hydrating (race with list rebuild).
@@ -1218,6 +1244,7 @@ pub(super) fn clear_messages(state: &AppState) {
     state.sender_avatars.borrow_mut().clear_rows();
     state.media_slots.borrow_mut().clear();
     state.media_msgs.borrow_mut().clear();
+    state.chat_images.borrow_mut().clear();
     state.receipt_slots.borrow_mut().clear();
     state.msg_created.borrow_mut().clear();
     state.pending_rows.borrow_mut().clear();
