@@ -174,9 +174,8 @@ globalThis.addEventListener("unhandledrejection", (ev) => {
     ev.preventDefault();
     if (authDead) return;
     authDead = true;
-    listening = false;
-    client = null;
     cancelBackgroundWork();
+    client = null;
     console.error("[auth] session ended:", msg);
     void clearAuth();
     emitEvent("session_failed", { error: msg });
@@ -328,7 +327,10 @@ const boxCursor = new Map<string, BoxCursor>();
 
 const listener = createListener({
   getClient: () => client,
-  isListening: () => listening,
+  onTransportStalled: () => {
+    console.error("[listen] PUSH transport stalled; restarting sidecar");
+    Deno.exit(1);
+  },
   setListening: (next) => {
     listening = next;
   },
@@ -344,6 +346,7 @@ const listener = createListener({
 const commands = createCommandService({
   getClient: () => client,
   setClient: (next) => {
+    if (client !== next) listener.stop();
     client = next;
   },
   isListening: () => listening,
@@ -424,6 +427,7 @@ function bumpMediaEpoch(chatMid: string): number {
 /** Bumped to cancel hydrateMedia / hydratePreviews after logout / token kick. */
 let workGen = 0;
 function cancelBackgroundWork() {
+  listener.stop();
   workGen++;
   void calls.shutdownCalls();
   for (const mid of [...mediaEpoch.keys()]) {

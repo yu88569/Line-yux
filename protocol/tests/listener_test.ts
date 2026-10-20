@@ -73,9 +73,9 @@ for (
     const mediaChats: string[] = [];
     const events: unknown[] = [];
     const hydrated = Promise.withResolvers<void>();
-    createListener({
+    const listener = createListener({
       getClient: () => client,
-      isListening: () => false,
+      onTransportStalled: () => {},
       setListening: () => {},
       summarizeTalkMessage: () => Promise.resolve(summary),
       invalidateMessages: (mid) => {
@@ -97,7 +97,8 @@ for (
       emitEvent: (event, payload) => {
         events.push({ event, payload });
       },
-    }).start();
+    });
+    listener.start();
     client.emit(
       "message",
       new TalkMessage({
@@ -149,6 +150,7 @@ for (
       }),
     );
     await hydrated.promise;
+    listener.stop();
     assertEquals(invalidated, [expected]);
     assertEquals(cursors, [{
       mid: expected,

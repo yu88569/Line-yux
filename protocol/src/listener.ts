@@ -4,9 +4,23 @@ import { messageChatMid } from "./messages.ts";
 
 type Json = Record<string, unknown>;
 
+type ListenerScheduler = {
+  now: () => number;
+  every: (callback: () => void, interval: number) => () => void;
+};
+
+const scheduler: ListenerScheduler = {
+  now: () => performance.now(),
+  every: (callback, interval) => {
+    const timer = setInterval(callback, interval);
+    return () => clearInterval(timer);
+  },
+};
+
 export type ListenerRuntime = {
   getClient: () => Client | null;
-  isListening: () => boolean;
+  onTransportStalled: () => void;
+  scheduler?: ListenerScheduler;
   setListening: (listening: boolean) => void;
   invalidateMessages: (chatMid: string) => void;
   summarizeTalkMessage: (
@@ -37,16 +51,36 @@ export function createListener(runtime: ListenerRuntime) {
     emitEvent,
   } = runtime;
 
+  let active: { client: Client; dispose: () => void } | null = null;
+
+  function stop() {
+    const session = active;
+    active = null;
+    if (!session) return;
+    session.dispose();
+    runtime.setListening(false);
+  }
+
   function startListen() {
     const client = runtime.getClient();
-    if (!client || runtime.isListening()) return;
+    if (client && active?.client === client) return;
+    stop();
+    if (!client) return;
+    const clock = runtime.scheduler ?? scheduler;
+    const controller = new AbortController();
+    const session = { client, dispose: () => {} };
+    active = session;
+    const ownsSession = () =>
+      active === session && runtime.getClient() === client;
+    let lastProgressAt = clock.now();
     runtime.setListening(true);
 
     // Register BEFORE listen() so early ops are not missed.
-    client.on("message", async (msg) => {
+    const onMessage = async (msg: TalkMessage) => {
+      if (!ownsSession()) return;
       try {
-        const tm = msg as TalkMessage;
-        const message = await summarizeTalkMessage(tm, { withMedia: false });
+        const message = await summarizeTalkMessage(msg, { withMedia: false });
+        if (!ownsSession()) return;
         const peer = messageChatMid(message);
         runtime.invalidateMessages(peer);
         // Advance box cursor so later refetch can see this message.
@@ -56,22 +90,23 @@ export function createListener(runtime: ListenerRuntime) {
         });
         emitEvent("message", { message: { ...message, imagePath: null } });
         await upsertChatFromMessage(message);
-        if (message.needsMedia) {
+        if (ownsSession() && message.needsMedia) {
           // Use the live TalkMessage.getData path — history refetch often misses
           // brand-new messages and left bubbles on "Image unavailable" until restart.
-          void hydrateLiveMedia(tm, message, peer);
+          void hydrateLiveMedia(msg, message, peer);
         }
       } catch (e) {
         console.error("[listen message]", e);
       }
-    });
+    };
 
-    client.on("event", (op: {
+    const onEvent = (op: {
       type?: string | number;
       param1?: string;
       param2?: string;
       param3?: string;
     }) => {
+      if (!ownsSession()) return;
       try {
         const type = String(op?.type ?? "");
         if (type === "NOTIFIED_READ_MESSAGE") {
@@ -92,20 +127,51 @@ export function createListener(runtime: ListenerRuntime) {
       } catch (e) {
         console.error("[listen event]", e);
       }
-    });
-
-    client.on(
-      "call:incoming",
-      calls.handleIncomingCall,
-    );
-    client.on(
-      "call:cancel",
-      calls.handleCallCancel,
-    );
-
-    client.listen({ talk: true, square: false });
+    };
+    const onIncoming: typeof calls.handleIncomingCall = (event) => {
+      if (ownsSession()) return calls.handleIncomingCall(event);
+    };
+    const onCancel: typeof calls.handleCallCancel = (event) => {
+      if (ownsSession()) return calls.handleCallCancel(event);
+    };
+    const onLog = ({ type, data }: { type: string; data: unknown }) => {
+      // Pinned LINE.js emits this for actual PUSH bytes, including idle pings.
+      if (
+        ownsSession() && type === "[LEGY/PUSH] readByte" &&
+        data instanceof Uint8Array && data.byteLength > 0
+      ) lastProgressAt = clock.now();
+    };
+    const cancelTimer = clock.every(() => {
+      if (!ownsSession()) {
+        if (active === session) stop();
+        return;
+      }
+      if (clock.now() - lastProgressAt < 120_000) return;
+      stop();
+      runtime.onTransportStalled();
+    }, 10_000);
+    session.dispose = () => {
+      cancelTimer();
+      client.off("message", onMessage);
+      client.off("event", onEvent);
+      client.off("call:incoming", onIncoming);
+      client.off("call:cancel", onCancel);
+      client.base.off("log", onLog);
+      controller.abort();
+    };
+    client.on("message", onMessage);
+    client.on("event", onEvent);
+    client.on("call:incoming", onIncoming);
+    client.on("call:cancel", onCancel);
+    client.base.on("log", onLog);
+    try {
+      client.listen({ talk: true, square: false, signal: controller.signal });
+    } catch (error) {
+      stop();
+      throw error;
+    }
     emitEvent("listening");
   }
 
-  return { start: startListen };
+  return { start: startListen, stop };
 }
