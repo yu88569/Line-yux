@@ -15,6 +15,16 @@ export interface SrtpCryptoContext {
 	rocs: Map<number, number>;
 }
 
+interface SrtpReceiveIndex {
+	roc: number;
+	highestSeq: number;
+}
+
+const receiveIndices = new WeakMap<
+	SrtpCryptoContext,
+	Map<number, SrtpReceiveIndex>
+>();
+
 const LABEL_RTP_ENCR = 0x00;
 const LABEL_RTP_AUTH = 0x01;
 const LABEL_RTP_SALT = 0x02;
@@ -112,7 +122,16 @@ export async function srtpDecrypt(
 
 	const ssrc = readU32(srtpPacket, 8);
 	const seq = readU16(srtpPacket, 2);
-	const roc = ctx.rocs.get(ssrc) ?? 0;
+	const received = receiveIndices.get(ctx)?.get(ssrc);
+	let roc = received?.roc ?? ctx.rocs.get(ssrc) ?? 0;
+	// RFC 3711 Appendix A estimates the cycle before authenticating reordered RTP.
+	if (received) {
+		if (received.highestSeq < 0x8000) {
+			if (seq - received.highestSeq > 0x8000) roc = (roc - 1) >>> 0;
+		} else if (received.highestSeq - 0x8000 > seq) {
+			roc = (roc + 1) >>> 0;
+		}
+	}
 
 	const { createHmac } = await import("node:crypto");
 	const h = createHmac("sha1", Buffer.from(ctx.authKey));
@@ -137,6 +156,20 @@ export async function srtpDecrypt(
 	const out = new Uint8Array(headerLen + dec.length);
 	out.set(inner.subarray(0, headerLen), 0);
 	out.set(dec, headerLen);
+	let indices = receiveIndices.get(ctx);
+	if (!indices) {
+		indices = new Map();
+		receiveIndices.set(ctx, indices);
+	}
+	const current = indices.get(ssrc);
+	// Authentication failures and late prior-cycle packets must not move the index.
+	if (
+		!current || roc === ((current.roc + 1) >>> 0) ||
+		(roc === current.roc && seq > current.highestSeq)
+	) {
+		indices.set(ssrc, { roc, highestSeq: seq });
+		ctx.rocs.set(ssrc, roc);
+	}
 	return out;
 }
 
@@ -241,14 +274,21 @@ export function parseRtp(pkt: Uint8Array): {
 	marker: boolean;
 	payload: Uint8Array;
 } {
-	if (pkt.length < 12) throw new Error("RTP too short");
+	const headerLen = rtpHeaderLength(pkt);
+	let payloadEnd = pkt.length;
+	if ((pkt[0] & 0x20) !== 0) {
+		const padLen = pkt[pkt.length - 1];
+		if (padLen >= 1 && padLen <= pkt.length - headerLen) {
+			payloadEnd -= padLen;
+		}
+	}
 	return {
 		payloadType: pkt[1] & 0x7f,
 		marker: (pkt[1] & 0x80) !== 0,
 		seq: readU16(pkt, 2),
 		timestamp: readU32(pkt, 4),
 		ssrc: readU32(pkt, 8),
-		payload: pkt.subarray(rtpHeaderLength(pkt)),
+		payload: pkt.subarray(headerLen, payloadEnd),
 	};
 }
 

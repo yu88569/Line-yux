@@ -64,6 +64,9 @@ function harness(
   const actions: string[] = [];
   const events: { event: string; payload?: Record<string, unknown> }[] = [];
   const errors: string[] = [];
+  let transportOptions:
+    | Parameters<NonNullable<Runtime["createTransport"]>>[0]
+    | undefined;
   const ended = Promise.withResolvers<PlanetEndReason>();
   const identity = {
     deviceId: "test-installation",
@@ -113,7 +116,10 @@ function harness(
     loadAuthDevice: options.loadAuthDevice ??
       (() => Promise.resolve("ANDROIDSECONDARY")),
     getIncomingIdentity: () => Promise.resolve(identity),
-    createTransport: () => transport,
+    createTransport: (options) => {
+      transportOptions = options;
+      return transport;
+    },
     startAudio: options.startAudio ?? (() => {
       actions.push("audio");
       return Promise.resolve({
@@ -140,11 +146,130 @@ function harness(
     events,
     errors,
     ended,
+    get transportOptions() {
+      return transportOptions;
+    },
     get acquired() {
       return acquired;
     },
   };
 }
+
+Deno.test("call receive diagnostics summarize allowlisted health without packet or identity data", async () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  const h = harness();
+  try {
+    h.incoming();
+    await doCallAnswer(1);
+    const debug = h.transportOptions?.debug;
+    assert(debug);
+    const secret = "do-not-log-secret";
+    debug({ type: "media_key_selected", send: secret, recv: secret });
+    for (let i = 0; i < 1000; i++) {
+      debug({ type: "recv", sourcePort: secret, sourceFamily: secret });
+      debug({ type: "rtp_recv", ssrc: secret, seq: i });
+      debug({ type: "media_recv", payloadType: 96, payload: secret });
+    }
+    debug({ type: "media_recv", payloadType: secret });
+    debug({ type: "media_decrypt_fail", reason: secret });
+    debug({ type: "media_decrypt_fail", reason: "SRTP auth tag mismatch" });
+    await doCallEnd(null);
+    const combined = logs.join("\n");
+    assert(!combined.includes(secret));
+    assert(!combined.includes(local));
+    assert(!combined.includes(caller));
+    assert(logs.length < 20, "receive diagnostics must aggregate packet logs");
+    assert(logs[0].includes('"phase":"monitoring"'));
+    const final = logs.at(-1);
+    assert(final);
+    assert(final.includes('"phase":"closed"'));
+    assert(final.includes('"udpPackets":1000'));
+    assert(final.includes('"srtpPackets":1000'));
+    assert(final.includes('"authenticatedPackets":1001'));
+    assert(final.includes('"authenticatedByPayloadType":{"96":1000}'));
+    assert(final.includes('"decryptFailures":2'));
+    assert(final.includes('"firstFailure":"other"'));
+  } finally {
+    await shutdownCalls();
+    console.error = originalError;
+  }
+});
+
+Deno.test("call receive diagnostics report zero SRTP at closure", async () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  const h = harness();
+  try {
+    h.incoming();
+    await doCallAnswer(1);
+    await doCallEnd(null);
+    const final = logs.at(-1);
+    assert(final);
+    assert(final.includes('"srtpPackets":0'));
+    assert(final.includes('"authenticatedPackets":0'));
+    assert(final.includes('"firstFailure":"none"'));
+  } finally {
+    await shutdownCalls();
+    console.error = originalError;
+  }
+});
+
+Deno.test("call signaling diagnostics retain numeric setup status and omit phrases and session data", async () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  const h = harness();
+  try {
+    h.incoming();
+    await doCallAnswer(1);
+    const debug = h.transportOptions?.debug;
+    assert(debug);
+    const secret = "private-phrase-session-key";
+    for (let i = 0; i < 1000; i++) {
+      debug({ type: "decrypt_ok", plaintext: secret });
+      debug({ type: "decrypt_fail", keys: secret });
+      debug({ type: "planet_msg", cc: "alive_rpt", session: secret });
+    }
+    debug({ type: "planet_msg", cc: secret, header: secret });
+    const beforeSetup = logs.length;
+    debug({
+      type: "setup_rsp",
+      result: 1,
+      relCode: 600,
+      relPhrase: secret,
+      session: secret,
+    });
+    assertEquals(
+      logs.length,
+      beforeSetup + 1,
+      "first setup response must log immediately",
+    );
+    debug({
+      type: "rel_req",
+      relCode: 601,
+      relPhrase: secret,
+      releaser: secret,
+    });
+    debug({ type: "rel_req", relCode: secret });
+    await doCallEnd(null);
+    assert(!logs.join("\n").includes(secret));
+    assert(logs.length < 20);
+    const final = logs.at(-1);
+    assert(final);
+    assert(final.includes('"signalingDecryptOk":1000'));
+    assert(final.includes('"signalingDecryptFailures":1000'));
+    assert(final.includes('"ccMessages":{"alive_rpt":1000,"other":1}'));
+    assert(final.includes('"firstSetup":{"result":1,"relCode":600}'));
+    assert(final.includes('"releaseRequests":2'));
+    assert(final.includes('"releaseCodes":{"601":1}'));
+  } finally {
+    await shutdownCalls();
+    console.error = originalError;
+  }
+});
 
 Deno.test("answering native incoming audio accepts its route and identity without an outgoing call", async () => {
   const h = harness();

@@ -2048,11 +2048,7 @@ pub(super) fn append_media_visual(bubble: &gtk::Box, visual: &impl IsA<gtk::Widg
 pub(super) fn make_media_picture_placeholder(sticker: bool) -> gtk::Picture {
     let (w, h) = if sticker { (128, 128) } else { (220, 160) };
     gtk::Picture::builder()
-        .content_fit(if sticker {
-            gtk::ContentFit::Contain
-        } else {
-            gtk::ContentFit::Cover
-        })
+        .content_fit(gtk::ContentFit::Contain)
         .can_shrink(true)
         .width_request(w)
         .height_request(h)

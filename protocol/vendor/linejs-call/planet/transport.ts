@@ -2196,6 +2196,20 @@ export class PlanetTransport implements CallTransport {
 		const setupBytes = reply.message.cc?.bodyBytes;
 		if (!setupBytes) throw new Error("PLANET setup_rsp missing body");
 		const setupRsp = decodeCcSetupRsp(setupBytes);
+		this.#debug({
+			type: "setup_rsp",
+			result: setupRsp.result,
+			relCode: setupRsp.relCode,
+			hasRelPhrase: setupRsp.relPhrase !== undefined,
+		});
+		if (
+			(setupRsp.result !== undefined && setupRsp.result !== 0) ||
+			(setupRsp.relCode !== undefined && setupRsp.relCode !== 0)
+		) {
+			throw new Error(
+				`PLANET SETUP rejected (result ${setupRsp.result ?? "absent"}, relCode ${setupRsp.relCode ?? "absent"})`,
+			);
+		}
 		await this.#sendPinholeProbes();
 		await this.#sendKeepalive();
 		this.#startKeepalive(setupRsp.aliveRptInterval);

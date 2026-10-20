@@ -1010,7 +1010,7 @@ pub fn load_css() {
         }
         .line-msg-status-read {
             opacity: 0.95;
-            color: @accent_color;
+            color: #06c755;
         }
         .line-msg-time {
             font-size: 0.70em;

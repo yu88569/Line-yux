@@ -9,6 +9,7 @@ import {
   type PlanetTransportOpts,
 } from "../vendor/linejs-call/entry.ts";
 import { startCallAudioIO } from "./call_audio.ts";
+import { CC_MSG_NAMES } from "../vendor/linejs-call/planet/schema.ts";
 
 type Json = Record<string, unknown>;
 type CallTransport = Pick<
@@ -46,9 +47,9 @@ const LINE_CALL_DEVICE_INFO = Deno.env.get("LINE_CALL_DEVICE_INFO")?.trim() ||
     Deno.env.get("LINE_VERSION")?.trim() || "26.6.2"
   }\tAndroid OS\t16`;
 const signalValue = Deno.env.get("LINE_CALL_OPUS_SIGNAL")?.trim();
-const opusSignal = signalValue === "auto" || signalValue === "voice"
+const opusSignal = signalValue === "auto" || signalValue === "music"
   ? signalValue
-  : "music";
+  : "voice";
 
 type ActiveCall = {
   id: string;
@@ -58,6 +59,7 @@ type ActiveCall = {
   connecting?: Promise<void>;
   audioStart?: ReturnType<typeof startCallAudioIO>;
   closing?: Promise<void>;
+  logMediaSummary?: () => void;
 };
 let activeCall: ActiveCall | null = null;
 let incomingOffer: IncomingAudioCall | null = null;
@@ -79,7 +81,7 @@ export function setCallAudioDevices(input?: string, output?: string) {
 }
 function clampGain(value: unknown, fallback: number): number {
   const gain = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(gain) ? Math.min(2.5, Math.max(0, gain)) : fallback;
+  return Number.isFinite(gain) ? Math.min(4, Math.max(0, gain)) : fallback;
 }
 export function setCallGains(micGain?: unknown, spkGain?: unknown) {
   if (micGain !== undefined) {
@@ -120,6 +122,7 @@ function endCall(call: ActiveCall, silent = false): Promise<void> {
   call.closing = (async () => {
     await call.connecting?.catch(() => {});
     await call.transport?.close().catch(() => {});
+    call.logMediaSummary?.();
     const audio = await call.audioStart?.catch(() => undefined);
     await audio?.stop().catch(() => {});
     if (activeCall === call) activeCall = null;
@@ -132,12 +135,140 @@ function failCall(call: ActiveCall, error: unknown) {
   return endCall(call, true);
 }
 async function makeTransport(call: ActiveCall, localMid: string) {
+  const received = {
+    udpPackets: 0,
+    srtpPackets: 0,
+    authenticatedPackets: 0,
+    decryptFailures: 0,
+    authenticatedByPayloadType: new Map<number, number>(),
+    firstFailure: "none",
+    signalingDecryptOk: 0,
+    signalingDecryptFailures: 0,
+    ccMessages: new Map<string, number>(),
+    setupResponses: 0,
+    releaseRequests: 0,
+    releaseCodes: new Map<number, number>(),
+  };
+  let firstSetup: { result: number | null; relCode: number | null } | null =
+    null;
+  const ccNames = new Set(Object.values(CC_MSG_NAMES));
+  const logSummary = (phase: "monitoring" | "receiving" | "closed") => {
+    console.error(
+      "[call media]",
+      JSON.stringify({
+        phase,
+        ...received,
+        authenticatedByPayloadType: Object.fromEntries(
+          received.authenticatedByPayloadType,
+        ),
+        ccMessages: Object.fromEntries(received.ccMessages),
+        firstSetup,
+        releaseCodes: Object.fromEntries(received.releaseCodes),
+      }),
+    );
+  };
+  const failureReasons = new Set([
+    "SRTP auth tag mismatch",
+    "SRTP packet too short",
+    "RTP too short",
+    "RTP CSRC header truncated",
+    "RTP extension header truncated",
+    "RTP extension data truncated",
+  ]);
+  let nextSummaryAt = 0;
+  call.logMediaSummary = () => logSummary("closed");
   const options: PlanetTransportOpts = {
     localMid,
     timeoutMs: 10_000,
     mediaKeyMode: "audio-reverse-stage",
     deviceInfo: LINE_CALL_DEVICE_INFO,
+    debug(event) {
+      let first = false;
+      switch (event.type) {
+        case "decrypt_ok":
+          received.signalingDecryptOk++;
+          first = received.signalingDecryptOk === 1;
+          break;
+        case "decrypt_fail":
+          received.signalingDecryptFailures++;
+          first = received.signalingDecryptFailures === 1;
+          break;
+        case "planet_msg": {
+          const name = typeof event.cc === "string" && ccNames.has(event.cc)
+            ? event.cc
+            : "other";
+          const count = received.ccMessages.get(name) ?? 0;
+          received.ccMessages.set(name, count + 1);
+          first = count === 0;
+          break;
+        }
+        case "setup_rsp":
+          received.setupResponses++;
+          first = received.setupResponses === 1;
+          if (first) {
+            firstSetup = {
+              result: typeof event.result === "number" &&
+                  Number.isSafeInteger(event.result)
+                ? event.result
+                : null,
+              relCode: typeof event.relCode === "number" &&
+                  Number.isSafeInteger(event.relCode)
+                ? event.relCode
+                : null,
+            };
+          }
+          break;
+        case "rel_req": {
+          received.releaseRequests++;
+          first = received.releaseRequests === 1;
+          const code = event.relCode;
+          if (typeof code === "number" && Number.isSafeInteger(code)) {
+            const count = received.releaseCodes.get(code) ?? 0;
+            received.releaseCodes.set(code, count + 1);
+          }
+          break;
+        }
+        case "recv":
+          received.udpPackets++;
+          first = received.udpPackets === 1;
+          break;
+        case "rtp_recv":
+          received.srtpPackets++;
+          first = received.srtpPackets === 1;
+          break;
+        case "media_recv": {
+          received.authenticatedPackets++;
+          first = received.authenticatedPackets === 1;
+          const pt = event.payloadType;
+          if (
+            typeof pt === "number" && Number.isInteger(pt) && pt >= 0 &&
+            pt <= 127
+          ) {
+            const count = received.authenticatedByPayloadType.get(pt) ?? 0;
+            received.authenticatedByPayloadType.set(pt, count + 1);
+          }
+          break;
+        }
+        case "media_decrypt_fail":
+          received.decryptFailures++;
+          first = received.decryptFailures === 1;
+          if (first) {
+            received.firstFailure = typeof event.reason === "string" &&
+                failureReasons.has(event.reason)
+              ? event.reason
+              : "other";
+          }
+          break;
+        default:
+          return;
+      }
+      if (first || Date.now() >= nextSummaryAt) {
+        logSummary("receiving");
+        nextSummaryAt = Date.now() + 5000;
+      }
+    },
   };
+  logSummary("monitoring");
   const transport = runtime.createTransport
     ? runtime.createTransport(options)
     : new (await import("../vendor/linejs-call/entry.ts")).PlanetTransport(
@@ -167,6 +298,7 @@ async function startAudio(call: ActiveCall, transport: CallTransport) {
     inputDevice: callAudioInput,
     outputDevice: callAudioOutput,
     opusSignal,
+    pairedOpus: true,
     onEnded: (error) => {
       if (!current(call)) return;
       if (error) void failCall(call, error);
