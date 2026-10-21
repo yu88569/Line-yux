@@ -191,6 +191,73 @@ fn chat_fixture(name: &str, application_id: &str) -> (PathBuf, PathBuf, Applicat
 
 #[test]
 #[ignore = "requires a GTK display"]
+fn gtk_chat_updates_preserve_typing_focus_and_draft() {
+    let (temp, _, _app, state) = chat_fixture("typing-focus", "dev.linegtk.TypingFocusFixture");
+    *state.restored_last_chat.borrow_mut() = true;
+    state.stack.set_visible_child_name("shell");
+    state.window.set_default_size(1000, 700);
+    apply_chats(
+        &state,
+        vec![chat("u-selected", 100), chat("c-other", 10)],
+        false,
+    );
+    state.current_chat.borrow_mut().replace("u-selected".into());
+    select_sidebar_chat(&state, Some("u-selected"));
+    state.window.present();
+    wait_for(|| state.composer.is_mapped());
+    state.composer.set_text("draft message");
+    assert!(state.composer.grab_focus());
+    drain();
+    state.composer.set_position(5);
+    assert_eq!(state.composer.position(), 5);
+    let typing_focus = gtk::prelude::GtkWindowExt::focus(&state.window)
+        .expect("composer has a focused text widget");
+    assert!(typing_focus.is_ancestor(&state.composer));
+
+    let incoming: MessageInfo = serde_json::from_value(serde_json::json!({
+        "id": "focus-message", "from": "u-member", "to": "c-other",
+        "mine": false, "text": "new notification", "createdTime": 200,
+    }))
+    .unwrap();
+    handle_event(&state, ProtocolEvent::Message(incoming));
+    drain();
+    assert_eq!(state.chats.borrow()[0].mid, "c-other");
+    assert_eq!(state.current_chat.borrow().as_deref(), Some("u-selected"));
+    assert_eq!(
+        state.chat_list.selected_row(),
+        Some(row(&state, "u-selected"))
+    );
+    assert_eq!(
+        gtk::prelude::GtkWindowExt::focus(&state.window),
+        Some(typing_focus.clone()),
+        "incoming message must preserve composer focus"
+    );
+    assert_eq!(state.composer.text(), "draft message");
+    assert_eq!(state.composer.position(), 5);
+
+    let refreshed = state.chats.borrow().clone();
+    apply_chats(&state, refreshed, true);
+    drain();
+    assert_eq!(
+        state.chat_list.selected_row(),
+        Some(row(&state, "u-selected"))
+    );
+    assert_eq!(
+        gtk::prelude::GtkWindowExt::focus(&state.window),
+        Some(typing_focus),
+        "chat list refresh must preserve composer focus"
+    );
+    assert_eq!(state.composer.text(), "draft message");
+    assert_eq!(state.composer.position(), 5);
+
+    state.window.destroy();
+    state.discord.shutdown();
+    drain();
+    std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+#[ignore = "requires a GTK display"]
 fn gtk_chat_upserts_preserve_resolved_names_and_accept_renames() {
     let (temp, _, _app, state) = chat_fixture("name-fixture", "dev.linegtk.ChatNameFixture");
     *state.restored_last_chat.borrow_mut() = true;

@@ -118,8 +118,6 @@ pub(super) fn select_sidebar_chat(state: &AppState, mid: Option<&str>) {
     };
     if let Some(row) = state.chat_list.row_at_index(pos as i32) {
         state.chat_list.select_row(Some(&row));
-        // Ensure the selected row is scrolled into view.
-        row.grab_focus();
     }
 }
 
