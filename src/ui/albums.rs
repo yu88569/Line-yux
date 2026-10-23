@@ -134,6 +134,28 @@ pub(super) fn open_album(state: &AppState, album: &AlbumRef) {
         .margin_top(12)
         .margin_bottom(12)
         .build();
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let title = gtk::Label::builder()
+        .label(&album.title)
+        .xalign(0.0)
+        .hexpand(true)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .css_classes(["heading"])
+        .build();
+    let close = gtk::Button::builder()
+        .icon_name("window-close-symbolic")
+        .tooltip_text(crate::i18n::t("media_close"))
+        .css_classes(["flat", "circular"])
+        .build();
+    let weak_window = window.downgrade();
+    close.connect_clicked(move |_| {
+        if let Some(window) = weak_window.upgrade() {
+            window.close();
+        }
+    });
+    header.append(&title);
+    header.append(&close);
+    root.append(&header);
     let grid = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .min_children_per_line(2)
@@ -927,6 +949,15 @@ mod tests {
         assert!(ui.viewer.borrow().is_none());
         assert!(!ui.more.is_visible());
         assert_eq!(ui.model.borrow().items.len(), 4);
+        let close = button_in(ui.window.upcast_ref(), "window-close-symbolic");
+        assert!(close.is_visible());
+        assert_eq!(
+            close.tooltip_text().as_deref(),
+            Some(crate::i18n::t("media_close").as_str())
+        );
+        close.emit_clicked();
+        drain();
+        assert!(!ui.window.is_visible());
         clipboard
             .set_content(None::<&gdk::ContentProvider>)
             .unwrap();
