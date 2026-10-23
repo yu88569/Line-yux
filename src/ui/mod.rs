@@ -21,6 +21,7 @@ mod media;
 mod messages;
 mod notifications;
 mod qr;
+mod replies;
 mod screen_capture;
 mod sender_avatars;
 mod settings;
@@ -47,6 +48,7 @@ use libadwaita::{Application, ApplicationWindow};
 use media::*;
 use messages::*;
 use notifications::{notify_incoming, refresh_notification_media};
+use replies::*;
 use state::*;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -144,6 +146,10 @@ fn build_state(
         chat_list: shell.chat_list,
         message_list: shell.message_list,
         message_scroll: shell.message_scroll,
+        reply_target: Rc::new(RefCell::new(None)),
+        reply_context: Rc::new(RefCell::new(HashMap::new())),
+        reply_strip: gtk::Box::new(gtk::Orientation::Horizontal, 8),
+        reply_label: gtk::Label::new(None),
         composer: shell.composer,
         composer_row: shell.composer_row,
         conversation: shell.conversation,
@@ -258,6 +264,7 @@ fn build_state(
         chat_media_viewers: Rc::new(RefCell::new(Vec::new())),
     };
 
+    setup_reply_strip(&state);
     (state, tray_rx)
 }
 
@@ -976,11 +983,29 @@ fn send_current(state: &AppState) {
     if attachment_batch_pending(state, &chat_mid) {
         return;
     }
+    let reply = state
+        .reply_target
+        .borrow()
+        .clone()
+        .filter(|r| r.chat_mid == chat_mid);
+    if reply.is_some() && text.is_empty() {
+        return;
+    }
+    if reply.is_some()
+        && state
+            .attachment_drafts
+            .borrow()
+            .get(&chat_mid)
+            .is_some_and(|d| !d.is_empty())
+    {
+        block_reply_attachment(state);
+        return;
+    }
     confirm_attachments(state, &chat_mid);
     if text.is_empty() {
         return;
     }
-    match state.sidecar.send_message(&chat_mid, &text) {
+    match state.sidecar.send_reply(&chat_mid, &text, reply.as_ref()) {
         Ok(id) => {
             begin_optimistic_send(
                 state,
@@ -1002,8 +1027,10 @@ fn send_current(state: &AppState) {
                     duration_ms: None,
                     flex: None,
                     album: None,
+                    reply,
                 },
             );
+            clear_reply(state);
             state.composer.set_text("");
             dismiss_new_marker(state);
             pin_messages_to_latest(state);
@@ -1035,6 +1062,7 @@ fn remove_pending_placeholder(state: &AppState, placeholder_id: &str) {
 
 fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg: MessageInfo) {
     let placeholder_id = format!("pending-{req_id}");
+    let retry = (msg.content_type == "NONE").then(|| (msg.text.clone(), msg.reply.clone()));
     msg.id = placeholder_id.clone();
     msg.mine = true;
     if msg.created_time <= 0 {
@@ -1051,6 +1079,7 @@ fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg:
         Pending::Send {
             chat_mid: chat_mid.into(),
             placeholder_id,
+            retry,
         },
     );
 }
@@ -1498,6 +1527,7 @@ fn wire_actions(state: &AppState) {
                     *s2.session_ready.borrow_mut() = false;
                     invalidate_attachment_session(&s2);
                     s2.pending.borrow_mut().clear();
+                    clear_reply(&s2);
                     *s2.current_chat.borrow_mut() = None;
                     s2.attachment_drafts.borrow_mut().clear();
                     refresh_attachment_drafts(&s2);
@@ -1537,6 +1567,7 @@ fn wire_actions(state: &AppState) {
                     *s2.session_ready.borrow_mut() = false;
                     invalidate_attachment_session(&s2);
                     s2.pending.borrow_mut().clear();
+                    clear_reply(&s2);
                     *s2.current_chat.borrow_mut() = None;
                     refresh_attachment_drafts(&s2);
                     clear_list(&s2.chat_list);
@@ -1741,6 +1772,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
 
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
+    clear_reply(state);
     state.current_chat.borrow_mut().replace(chat.mid.clone());
     refresh_attachment_drafts(state);
     hide_upload_progress(state);
@@ -1823,6 +1855,7 @@ fn submit_email_login(state: &AppState) {
 }
 
 fn restart_login(state: &AppState) {
+    clear_reply(state);
     invalidate_attachment_session(state);
     *state.session_ready.borrow_mut() = false;
     *state.restarting.borrow_mut() = true;

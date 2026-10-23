@@ -100,8 +100,21 @@ pub struct AlbumPage {
     #[serde(rename = "nextCursor")]
     pub next_cursor: Option<String>,
 }
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplyTarget {
+    pub chat_mid: String,
+    pub id: String,
+    #[serde(default)]
+    pub sender: String,
+    #[serde(default)]
+    pub preview: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MessageInfo {
+    #[serde(default)]
+    pub reply: Option<ReplyTarget>,
     #[serde(default)]
     pub id: String,
     #[serde(default)]

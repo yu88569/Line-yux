@@ -633,6 +633,7 @@ fn toggle_chat_mute_for(state: &AppState, mid: &str) {
 pub(super) fn set_chat_hidden(state: &AppState, mid: &str, hidden: bool) {
     if hidden && state.current_chat.borrow().as_deref() == Some(mid) {
         finish_voice_record(state, false);
+        clear_reply(state);
         *state.current_chat.borrow_mut() = None;
         refresh_attachment_drafts(state);
         state.chat_list.unselect_all();

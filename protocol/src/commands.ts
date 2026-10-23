@@ -1,3 +1,4 @@
+import { parseReply } from "./replies.ts";
 import { needsAlbumMetadataRefresh } from "./albums.ts";
 import {
   type Client,
@@ -668,7 +669,16 @@ export function createCommandService(runtime: CommandRuntime) {
     id: number | string | null,
     chatMid: string,
     text: string,
+    replyValue?: unknown,
   ) {
+    let reply;
+    try {
+      reply = parseReply(replyValue, chatMid);
+    } catch {
+      fail(id, "invalid_reply");
+      return;
+    }
+    const relation = reply ? { relatedMessageId: reply.id } : {};
     const client = runtime.getClient();
     if (!client) {
       fail(id, "not_logged_in");
@@ -689,6 +699,7 @@ export function createCommandService(runtime: CommandRuntime) {
         to: chatMid,
         text,
         e2ee: false,
+        ...relation,
       }) as unknown as typeof sent;
     } catch (e1) {
       try {
@@ -696,12 +707,13 @@ export function createCommandService(runtime: CommandRuntime) {
           to: chatMid,
           text,
           e2ee: true,
+          ...relation,
         }) as unknown as typeof sent;
       } catch (e2) {
         try {
           const chat = await client.getChat(chatMid);
-          const m = await chat.sendMessage(text);
-          const message = await summarizeTalkMessage(m, { withMedia: false })
+          const m = await chat.sendMessage({ text, ...relation });
+          const summary = await summarizeTalkMessage(m, { withMedia: false })
             .catch(() =>
               sentMessagePayload(
                 {
@@ -712,6 +724,7 @@ export function createCommandService(runtime: CommandRuntime) {
                 text,
               )
             );
+          const message = { ...summary, ...(reply ? { reply } : {}) };
           msgCache.delete(chatMid);
           runtime.setChatCache(null);
           touchChatPreviewFromMessage(message);
@@ -735,7 +748,10 @@ export function createCommandService(runtime: CommandRuntime) {
 
     msgCache.delete(chatMid);
     runtime.setChatCache(null);
-    const message = sentMessagePayload(sent, chatMid, text);
+    const message = {
+      ...sentMessagePayload(sent, chatMid, text),
+      ...(reply ? { reply } : {}),
+    };
     touchChatPreviewFromMessage(message);
     ok(id, { message });
   }

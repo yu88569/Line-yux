@@ -4,6 +4,12 @@ pub(super) fn message_list_fingerprint(messages: &[MessageInfo]) -> (usize, Stri
     let first = messages.first().map(|m| m.id.clone()).unwrap_or_default();
     let mut last = messages.last().map(|m| m.id.clone()).unwrap_or_default();
     for message in messages {
+        if let Some(reply) = &message.reply {
+            last.push_str(&format!(
+                "|reply:{}:{}:{}:{}",
+                message.id, reply.id, reply.sender, reply.preview
+            ));
+        }
         if let Some(album) = &message.album {
             last.push_str(&format!(
                 "|{}:{}:{}:{}",
@@ -31,6 +37,23 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
     state.media_queue.borrow_mut().clear();
     *state.stick_bottom.borrow_mut() = true;
     messages.sort_by_key(|m| m.created_time);
+    let fingerprint = message_list_fingerprint(&messages);
+    let originals: HashMap<_, _> = messages
+        .iter()
+        .map(|m| (m.id.clone(), (reply_sender(state, m), preview_body_ui(m))))
+        .collect();
+    for msg in &mut messages {
+        if let Some(reply) = &mut msg.reply
+            && let Some((sender, preview)) = originals.get(&reply.id)
+        {
+            if reply.sender.is_empty() {
+                reply.sender = sender.clone();
+            }
+            if reply.preview.is_empty() {
+                reply.preview = preview.chars().take(160).collect();
+            }
+        }
+    }
     {
         let mut chat_media = state.chat_media.borrow_mut();
         let mut seen = HashSet::new();
@@ -47,7 +70,7 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
         }
     }
     if let Some(mid) = state.current_chat.borrow().clone() {
-        let (len, first, last) = message_list_fingerprint(&messages);
+        let (len, first, last) = fingerprint;
         *state.msg_list_fp.borrow_mut() = Some((mid, len, first, last));
     } else {
         *state.msg_list_fp.borrow_mut() = None;
@@ -206,6 +229,15 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         bubble.add_css_class("line-bubble-pending");
         outer.add_css_class("line-msg-pending");
     }
+
+    if let Some(target) = reply_target(state, msg) {
+        state
+            .reply_context
+            .borrow_mut()
+            .insert(msg.id.clone(), target);
+    }
+    attach_reply_menu(state, &bubble, msg);
+    append_reply_quote(state, &bubble, msg);
 
     let has_image = msg
         .image_path
@@ -992,8 +1024,12 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
     let Some(bubble) = state.media_slots.borrow().get(message_id).cloned() else {
         return;
     };
-    while let Some(child) = bubble.first_child() {
-        bubble.remove(&child);
+    let mut child = bubble.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if !widget.is::<gtk::Popover>() && !widget.has_css_class("line-reply-quote") {
+            bubble.remove(&widget);
+        }
     }
     let duration_ms = ffprobe_duration_ms(std::path::Path::new(path)).map(|v| v as i64);
     let msg = MessageInfo {
@@ -1012,6 +1048,7 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
         duration_ms,
         flex: None,
         album: None,
+        reply: None,
     };
     append_voice_card(state, &bubble, &msg, true);
 }
@@ -1239,6 +1276,7 @@ pub(super) fn append_link_chips(_state: &AppState, bubble: &gtk::Box, text: &str
 }
 
 pub(super) fn clear_messages(state: &AppState) {
+    state.reply_context.borrow_mut().clear();
     stop_voice_playback(state);
     state.message_list.clear();
     state.sender_avatars.borrow_mut().clear_rows();

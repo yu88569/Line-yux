@@ -1,3 +1,4 @@
+import { incomingReply } from "./replies.ts";
 /**
  * LINE protocol sidecar for line-gtk.
  * NDJSON over stdin/stdout. Heavy I/O is cached + async so GTK stays snappy.
@@ -793,6 +794,8 @@ async function summarizeTalkMessage(
     contentType?: string | number;
     contentMetadata?: Record<string, string>;
     chunks?: unknown[];
+    relatedMessageId?: string;
+    messageRelationType?: string | number;
   };
   const contentType = normType(raw.contentType);
   const meta = raw.contentMetadata ?? {};
@@ -852,6 +855,10 @@ async function summarizeTalkMessage(
     }
     const flex = null;
     return {
+      reply: incomingReply(
+        raw,
+        messageChatMid({ ...raw, mine: isMineFrom(raw.from) }),
+      ),
       id,
       text: duration
         ? `Voice message (${Math.round(Number(duration) / 1000)}s)`
@@ -976,6 +983,10 @@ async function summarizeTalkMessage(
   const flex = contentType === "FLEX" ? extractFlex(meta) : null;
 
   return {
+    reply: incomingReply(
+      raw,
+      messageChatMid({ ...raw, mine: isMineFrom(raw.from) }),
+    ),
     id,
     text,
     from: raw.from ?? "",
@@ -1030,6 +1041,10 @@ async function summarizeRawMessage(
       else if (contentType !== "NONE") text = `[${contentType}]`;
     }
     return {
+      reply: incomingReply(
+        r,
+        messageChatMid({ ...r, mine: isMineFrom(r.from) }),
+      ),
       id: String(r.id ?? ""),
       text,
       from: String(r.from ?? ""),
@@ -1690,7 +1705,7 @@ function sentMessagePayload(
   text: string,
 ): Json {
   return {
-    id: String(sent?.id ?? Date.now()),
+    id: String(sent?.id ?? ""),
     text,
     from: myMid(),
     to: chatMid,
@@ -1818,6 +1833,7 @@ async function handle(req: Json) {
           id,
           String(params.chatMid ?? ""),
           String(params.text ?? ""),
+          params.reply,
         );
         break;
       case "send_audio":

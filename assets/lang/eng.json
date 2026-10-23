@@ -404,5 +404,9 @@
   "qr_decode_failed": "Could not read QR codes from this image.",
   "qr_copy": "Copy text",
   "qr_open": "Open link",
-  "qr_open_failed": "Could not open this link."
+  "qr_open_failed": "Could not open this link.",
+  "reply": "Reply",
+  "cancel_reply": "Cancel reply",
+  "reply_message": "Original message",
+  "reply_text_only": "Replies support text messages. Cancel reply to send attachments or stickers."
 }

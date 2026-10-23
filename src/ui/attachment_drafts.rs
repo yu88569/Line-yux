@@ -237,6 +237,7 @@ pub(super) fn confirm_attachments(state: &AppState, chat: &str) {
                         duration_ms: item.duration_ms.map(|v| v as i64),
                         flex: None,
                         album: None,
+                        reply: None,
                     },
                 );
                 show_upload_progress(state, 0.02, &crate::i18n::t("media_uploading"));

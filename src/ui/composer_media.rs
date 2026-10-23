@@ -294,6 +294,9 @@ pub(super) fn send_sticker_now(
     version: Option<&str>,
     image_path: Option<&str>,
 ) {
+    if block_reply_attachment(state) {
+        return;
+    }
     let Some(chat_mid) = state.current_chat.borrow().clone() else {
         toast(state, &crate::i18n::t("select_chat_first"));
         return;
@@ -323,6 +326,7 @@ pub(super) fn send_sticker_now(
                     duration_ms: None,
                     flex: None,
                     album: None,
+                    reply: None,
                 },
             );
             dismiss_new_marker(state);
@@ -601,6 +605,9 @@ pub(super) fn write_clipboard_bytes(
 }
 
 pub(super) fn start_voice_record(state: &AppState) {
+    if block_reply_attachment(state) {
+        return;
+    }
     let Some(_chat_mid) = state.current_chat.borrow().clone() else {
         toast(state, &crate::i18n::t("select_chat_first"));
         return;
@@ -731,6 +738,9 @@ pub(super) fn stop_ffmpeg_recording(state: &AppState) -> Option<std::time::Insta
 
 /// `send == true` remuxes and uploads; `false` cancels and discards.
 pub(super) fn finish_voice_record(state: &AppState, send: bool) {
+    if send && block_reply_attachment(state) {
+        return;
+    }
     if state.recording.borrow().is_none() && state.recording_started.borrow().is_none() {
         state.composer_stack.set_visible_child_name("compose");
         return;
@@ -803,6 +813,7 @@ pub(super) fn finish_voice_record(state: &AppState, send: bool) {
                     duration_ms: Some(duration_ms as i64),
                     flex: None,
                     album: None,
+                    reply: None,
                 },
             );
             show_upload_progress(state, 0.02, &crate::i18n::t("media_uploading"));

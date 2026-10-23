@@ -42,6 +42,10 @@ pub(super) struct AppState {
     pub attachment_requests: Rc<RefCell<HashMap<u64, (String, u64)>>>,
     pub next_attachment_id: Rc<RefCell<u64>>,
     pub attachment_epoch: Rc<RefCell<u64>>,
+    pub reply_target: Rc<RefCell<Option<crate::protocol::ReplyTarget>>>,
+    pub reply_context: Rc<RefCell<HashMap<String, crate::protocol::ReplyTarget>>>,
+    pub reply_strip: gtk::Box,
+    pub reply_label: gtk::Label,
     pub composer: gtk::Entry,
     pub composer_row: gtk::Box,
     pub conversation: gtk::Box,
@@ -188,6 +192,7 @@ pub(super) enum Pending {
     Send {
         chat_mid: String,
         placeholder_id: String,
+        retry: Option<(String, Option<crate::protocol::ReplyTarget>)>,
     },
     ListStickers,
     ShareFile {

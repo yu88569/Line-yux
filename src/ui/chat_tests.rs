@@ -843,3 +843,183 @@ fn gtk_incoming_sender_avatars_cache_late_updates_and_cleanup() {
     drain();
     let _ = std::fs::remove_dir_all(temp);
 }
+
+#[test]
+#[ignore = "requires GTK and an X11 display with xdotool"]
+fn gtk_message_reply_right_click_and_lifecycle() {
+    let (temp, _, _app, state) = chat_fixture("message-reply", "dev.linegtk.ReplyFixture");
+    let log = temp.join("requests.jsonl");
+    std::fs::write(
+        temp.join("protocol/line-gtk-protocol"),
+        format!(
+            "#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; done\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    state.sidecar.restart().unwrap();
+    *state.session_ready.borrow_mut() = true;
+    let peer = "u11111111111111111111111111111111";
+    *state.current_chat.borrow_mut() = Some(peer.into());
+    let mut person = chat(peer, 1);
+    person.name = "Alice".into();
+    state.chats.borrow_mut().push(person);
+    state.stack.set_visible_child_name("shell");
+    state.msg_stack.set_visible_child_name("list");
+    state
+        .window
+        .set_title(Some("LINE reply interaction fixture"));
+    state.window.present();
+    let original: MessageInfo = serde_json::from_value(serde_json::json!({"id":"123456789","text":"Original selectable text","from":peer,"to":"u22222222222222222222222222222222","createdTime":1})).unwrap();
+    append_message(&state, &original, false);
+    wait_for(|| {
+        descendants(state.window.upcast_ref())
+            .iter()
+            .any(|w| w.has_css_class("line-bubble-text") && w.is_mapped())
+    });
+    let label = descendants(state.window.upcast_ref())
+        .into_iter()
+        .find(|w| w.has_css_class("line-bubble-text"))
+        .unwrap();
+    assert!(
+        label
+            .clone()
+            .downcast::<gtk::Label>()
+            .unwrap()
+            .is_selectable()
+    );
+    let bubble = label.parent().unwrap();
+    let menu = descendants(&bubble)
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::Popover>().ok())
+        .unwrap();
+    let controllers = bubble.observe_controllers();
+    assert!((0..controllers.n_items()).any(|i| {
+        controllers
+            .item(i)
+            .and_then(|c| c.downcast::<gtk::GestureClick>().ok())
+            .is_some_and(|c| {
+                c.button() == 3 && c.propagation_phase() == gtk::PropagationPhase::Capture
+            })
+    }));
+    unsafe extern "C" {
+        fn gdk_x11_surface_get_xid(surface: *mut gdk::ffi::GdkSurface) -> std::os::raw::c_ulong;
+    }
+    use glib::translate::ToGlibPtr;
+    let surface = state.window.surface().unwrap();
+    let window = unsafe { gdk_x11_surface_get_xid(surface.to_glib_none().0) }.to_string();
+    gdk::Display::default().unwrap().flush();
+    wait_for(|| label.width() > 0 && label.height() > 0);
+    let point = label
+        .compute_point(&state.window, &gtk::graphene::Point::new(10.0, 10.0))
+        .unwrap();
+    std::process::Command::new("xdotool")
+        .args(["windowmap", &window])
+        .status()
+        .unwrap();
+    std::process::Command::new("xdotool")
+        .args(["windowraise", &window])
+        .status()
+        .unwrap();
+    assert!(
+        std::process::Command::new("xdotool")
+            .args([
+                "mousemove",
+                "--window",
+                &window,
+                &(point.x() as i32).to_string(),
+                &(point.y() as i32).to_string(),
+                "click",
+                "3"
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    wait_for(|| menu.is_visible());
+    let actions: Vec<_> = descendants(menu.upcast_ref())
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Button>().ok())
+        .collect();
+    assert!(
+        actions
+            .iter()
+            .any(|b| b.label().as_deref() == Some(&crate::i18n::t("qr_copy")))
+    );
+    actions
+        .iter()
+        .find(|b| b.label().as_deref() == Some(&crate::i18n::t("reply")))
+        .unwrap()
+        .emit_clicked();
+    assert_eq!(
+        state.reply_target.borrow().as_ref().unwrap().id,
+        original.id
+    );
+    assert!(state.reply_label.text().contains("Alice"));
+    state
+        .reply_strip
+        .last_child()
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap()
+        .emit_clicked();
+    assert!(state.reply_target.borrow().is_none());
+    set_reply(&state, reply_target(&state, &original));
+    state.composer.set_text("A real reply");
+    send_current(&state);
+    assert!(state.reply_target.borrow().is_none());
+    wait_for(|| {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("A real reply")
+    });
+    let request: serde_json::Value = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|r| r["method"] == "send_message")
+        .unwrap();
+    assert_eq!(request["params"]["reply"]["id"], original.id);
+    let id = request["id"].as_u64().unwrap();
+    handle_event(
+        &state,
+        ProtocolEvent::Response {
+            id,
+            ok: false,
+            result: serde_json::Value::Null,
+            error: Some("fixture failed".into()),
+        },
+    );
+    assert_eq!(state.composer.text(), "A real reply");
+    assert_eq!(
+        state.reply_target.borrow().as_ref().unwrap().id,
+        original.id
+    );
+    let audio: MessageInfo = serde_json::from_value(serde_json::json!({"id":"234567890","text":"Voice message","from":peer,"to":"u22222222222222222222222222222222","contentType":"AUDIO","reply":{"chatMid":peer,"id":original.id,"sender":"Alice","preview":"Original selectable text"}})).unwrap();
+    append_message(&state, &audio, false);
+    let audio_bubble = state.media_slots.borrow().get(&audio.id).unwrap().clone();
+    attach_audio_to_slot(&state, &audio.id, "/tmp/line-reply-fixture-unavailable.m4a");
+    let hydrated = descendants(audio_bubble.upcast_ref());
+    assert!(hydrated.iter().any(|w| w.is::<gtk::Popover>()));
+    assert!(hydrated.iter().any(|w| w.has_css_class("line-reply-quote")));
+    assert!(
+        reply_target(
+            &state,
+            &serde_json::from_value::<MessageInfo>(
+                serde_json::json!({"id":"pending-1","from":peer})
+            )
+            .unwrap()
+        )
+        .is_none()
+    );
+    let other = chat("u33333333333333333333333333333333", 2);
+    open_chat(&state, &other);
+    assert!(state.reply_target.borrow().is_none());
+    set_reply(&state, reply_target(&state, &original));
+    assert!(
+        state.reply_target.borrow().is_none(),
+        "cross-chat targets are rejected"
+    );
+    state.window.close();
+    let _ = std::fs::remove_dir_all(temp);
+}

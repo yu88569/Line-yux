@@ -291,6 +291,18 @@ impl Sidecar {
         )
     }
 
+    pub fn send_reply(
+        &self,
+        chat_mid: &str,
+        text: &str,
+        reply: Option<&crate::protocol::ReplyTarget>,
+    ) -> Result<u64> {
+        self.request(
+            "send_message",
+            Some(json!({ "chatMid": chat_mid, "text": text, "reply": reply })),
+        )
+    }
+
     pub fn send_audio(
         &self,
         chat_mid: &str,

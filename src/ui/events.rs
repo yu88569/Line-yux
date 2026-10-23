@@ -579,7 +579,20 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                             .unwrap_or(&crate::i18n::t("friends_load_failed")),
                     );
                 }
-                if let Some(Pending::Send { placeholder_id, .. }) = pending.as_ref() {
+                if let Some(Pending::Send {
+                    placeholder_id,
+                    chat_mid,
+                    retry,
+                }) = pending.as_ref()
+                {
+                    if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str())
+                        && state.composer.text().is_empty()
+                        && state.reply_target.borrow().is_none()
+                        && let Some((text, reply)) = retry
+                    {
+                        state.composer.set_text(text);
+                        set_reply(state, reply.clone());
+                    }
                     hide_upload_progress(state);
                     remove_pending_placeholder(state, placeholder_id);
                 }
@@ -637,6 +650,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 Some(Pending::Send {
                     placeholder_id,
                     chat_mid,
+                    ..
                 }) => {
                     remove_pending_placeholder(state, &placeholder_id);
                     if state.current_chat.borrow().as_deref() != Some(chat_mid.as_str()) {
@@ -860,6 +874,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    clear_reply(state);
     state.stack.set_visible_child_name("login");
     login::show_method_stage(&state.login);
     state.login.hint.set_text(hint);
