@@ -595,7 +595,7 @@ fn read_loop<R: std::io::Read>(
                         "message" => {
                             if let Some(msg) = resp.extra.get("message") {
                                 match serde_json::from_value(msg.clone()) {
-                                    Ok(m) => ProtocolEvent::Message(m),
+                                    Ok(m) => ProtocolEvent::Message(Box::new(m)),
                                     Err(e) => ProtocolEvent::Error(e.to_string()),
                                 }
                             } else {

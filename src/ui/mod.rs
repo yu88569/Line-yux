@@ -1027,7 +1027,7 @@ fn send_current(state: &AppState) {
                     duration_ms: None,
                     flex: None,
                     album: None,
-                    reply,
+                    reply: reply.map(Box::new),
                 },
             );
             clear_reply(state);
@@ -1062,7 +1062,8 @@ fn remove_pending_placeholder(state: &AppState, placeholder_id: &str) {
 
 fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg: MessageInfo) {
     let placeholder_id = format!("pending-{req_id}");
-    let retry = (msg.content_type == "NONE").then(|| (msg.text.clone(), msg.reply.clone()));
+    let retry =
+        (msg.content_type == "NONE").then(|| (msg.text.clone(), msg.reply.as_deref().cloned()));
     msg.id = placeholder_id.clone();
     msg.mine = true;
     if msg.created_time <= 0 {

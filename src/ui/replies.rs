@@ -103,7 +103,7 @@ pub(super) fn attach_reply_menu(state: &AppState, bubble: &gtk::Box, msg: &Messa
 }
 
 pub(super) fn append_reply_quote(state: &AppState, bubble: &gtk::Box, msg: &MessageInfo) {
-    if let Some(reply) = &msg.reply {
+    if let Some(reply) = msg.reply.as_deref() {
         let context = state.reply_context.borrow();
         let reply = if reply.preview.is_empty() {
             context.get(&reply.id).unwrap_or(reply)

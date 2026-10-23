@@ -114,7 +114,7 @@ pub struct ReplyTarget {
 #[derive(Debug, Clone, Deserialize)]
 pub struct MessageInfo {
     #[serde(default)]
-    pub reply: Option<ReplyTarget>,
+    pub reply: Option<Box<ReplyTarget>>,
     #[serde(default)]
     pub id: String,
     #[serde(default)]
@@ -180,7 +180,7 @@ pub enum ProtocolEvent {
         pin: String,
     },
     Listening,
-    Message(MessageInfo),
+    Message(Box<MessageInfo>),
     Chats {
         chats: Vec<ChatInfo>,
         cached: bool,

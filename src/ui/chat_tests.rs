@@ -219,7 +219,7 @@ fn gtk_chat_updates_preserve_typing_focus_and_draft() {
         "mine": false, "text": "new notification", "createdTime": 200,
     }))
     .unwrap();
-    handle_event(&state, ProtocolEvent::Message(incoming));
+    handle_event(&state, ProtocolEvent::Message(Box::new(incoming)));
     drain();
     assert_eq!(state.chats.borrow()[0].mid, "c-other");
     assert_eq!(state.current_chat.borrow().as_deref(), Some("u-selected"));
@@ -321,7 +321,7 @@ fn gtk_menu_actions_mutate_real_state_and_show_status_icons() {
         "mine": false, "text": "group hello", "createdTime": 200,
     }))
     .unwrap();
-    handle_event(&state, ProtocolEvent::Message(incoming));
+    handle_event(&state, ProtocolEvent::Message(Box::new(incoming)));
     assert_eq!(
         state.chats.borrow()[0].mid,
         "c-target",
@@ -345,7 +345,7 @@ fn gtk_menu_actions_mutate_real_state_and_show_status_icons() {
             "text": text, "createdTime": 201,
         }))
         .unwrap();
-        handle_event(&state, ProtocolEvent::Message(message));
+        handle_event(&state, ProtocolEvent::Message(Box::new(message)));
         assert!(state.seen_msg_ids.borrow().contains(id));
         let model = state.message_list.widget().model().unwrap();
         assert!(
@@ -379,7 +379,7 @@ fn gtk_menu_actions_mutate_real_state_and_show_status_icons() {
         "mine": false, "text": "room hello", "createdTime": 202,
     }))
     .unwrap();
-    handle_event(&state, ProtocolEvent::Message(room_message));
+    handle_event(&state, ProtocolEvent::Message(Box::new(room_message)));
     assert_eq!(state.chats.borrow()[0].mid, "r-room");
     assert_eq!(state.chats.borrow()[0].kind, "group");
     assert_eq!(state.chats.borrow()[0].unread, 1);
