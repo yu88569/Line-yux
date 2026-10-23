@@ -294,10 +294,10 @@ pub(super) fn request_media_action(
         .get(&msg.id)
         .cloned()
         .unwrap_or_else(|| msg.clone());
-    if msg.content_type.eq_ignore_ascii_case("IMAGE")
+    if is_chat_media(&msg)
         && matches!(&action, PendingMediaAction::ViewOrSave(value) if value == "open_viewer")
     {
-        open_chat_image_viewer(state, &msg);
+        open_chat_media_viewer(state, &msg);
         return;
     }
     let needs_full_media = msg.content_type.eq_ignore_ascii_case("IMAGE")
@@ -534,6 +534,7 @@ pub(super) fn wire_media_open_click(
 pub(super) struct MediaViewer {
     pub window: gtk::Window,
     copy_keys: Rc<RefCell<Option<gtk::EventControllerKey>>>,
+    video_stream: Rc<RefCell<Option<gtk::MediaStream>>>,
 }
 
 impl MediaViewer {
@@ -558,13 +559,25 @@ impl MediaViewer {
             glib::Propagation::Proceed
         });
         window.add_controller(controller);
+        let video_stream: Rc<RefCell<Option<gtk::MediaStream>>> = Rc::default();
+        let close_stream = video_stream.clone();
+        window.connect_close_request(move |_| {
+            if let Some(stream) = close_stream.borrow_mut().take() {
+                stream.pause();
+            }
+            glib::Propagation::Proceed
+        });
         Self {
             window,
+            video_stream,
             copy_keys: Rc::new(RefCell::new(None)),
         }
     }
 
     pub fn clear(&self) {
+        if let Some(stream) = self.video_stream.borrow_mut().take() {
+            stream.pause();
+        }
         if let Some(controller) = self.copy_keys.borrow_mut().take() {
             self.window.remove_controller(&controller);
         }
@@ -634,7 +647,7 @@ impl MediaViewer {
 
         match kind {
             ViewerKind::Video => {
-                append_gpu_video_viewer(&body, path);
+                *self.video_stream.borrow_mut() = Some(append_gpu_video_viewer(&body, path));
             }
             ViewerKind::Image => {
                 *self.copy_keys.borrow_mut() = append_image_viewer(state, &bar, &body, path, win);
@@ -856,7 +869,7 @@ pub(super) fn open_path_externally(path: &str) {
 }
 
 /// Prefer GPU decode + offloaded composition for in-app video.
-pub(super) fn append_gpu_video_viewer(body: &gtk::Box, path: &str) {
+pub(super) fn append_gpu_video_viewer(body: &gtk::Box, path: &str) -> gtk::MediaStream {
     let file = gio::File::for_path(path);
     let stream = gtk::MediaFile::for_file(&file);
     stream.set_loop(false);
@@ -877,6 +890,7 @@ pub(super) fn append_gpu_video_viewer(body: &gtk::Box, path: &str) {
 
     body.append(&offload);
     stream.play();
+    stream.upcast()
 }
 
 fn render_image_viewport(

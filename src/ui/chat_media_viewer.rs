@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum ImageDownload {
+enum MediaDownload {
     Idle,
     Loading { request_id: u64 },
     Ready { path: String },
@@ -12,28 +12,28 @@ enum ImageDownload {
 }
 
 #[derive(Clone, Debug)]
-struct ChatImage {
+struct ChatMedia {
     message: MessageInfo,
-    download: ImageDownload,
+    download: MediaDownload,
 }
 
-struct ChatImages {
-    items: Vec<ChatImage>,
+struct ChatMedias {
+    items: Vec<ChatMedia>,
     selected: usize,
 }
 
-pub(super) struct ChatImageSession {
+pub(super) struct ChatMediaSession {
     media: media::MediaViewer,
     source_chat_mid: String,
-    model: RefCell<ChatImages>,
+    model: RefCell<ChatMedias>,
     closed: Cell<bool>,
     rendered: RefCell<Option<(usize, String)>>,
 }
 
 #[derive(Clone)]
-pub(super) struct ChatImageViewer(pub(super) Rc<ChatImageSession>);
+pub(super) struct ChatMediaViewer(pub(super) Rc<ChatMediaSession>);
 
-impl ChatImageViewer {
+impl ChatMediaViewer {
     pub(super) fn is_closed(&self) -> bool {
         self.0.closed.get()
     }
@@ -44,8 +44,10 @@ impl ChatImageViewer {
     }
 }
 
-pub(super) fn is_chat_image(msg: &MessageInfo) -> bool {
-    msg.content_type.eq_ignore_ascii_case("IMAGE") && !msg.id.is_empty()
+pub(super) fn is_chat_media(msg: &MessageInfo) -> bool {
+    (msg.content_type.eq_ignore_ascii_case("IMAGE")
+        || msg.content_type.eq_ignore_ascii_case("VIDEO"))
+        && !msg.id.is_empty()
 }
 
 fn resolve_freshest_message(
@@ -72,19 +74,19 @@ fn resolve_freshest_message(
 }
 
 fn build_snapshot(
-    chat_images: &[MessageInfo],
+    chat_media: &[MessageInfo],
     clicked: &MessageInfo,
     fresh_cache: Option<&HashMap<String, MessageInfo>>,
-) -> (Vec<ChatImage>, usize) {
+) -> (Vec<ChatMedia>, usize) {
     let mut messages: Vec<MessageInfo> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    for msg in chat_images {
-        if is_chat_image(msg) && seen.insert(msg.id.clone()) {
+    for msg in chat_media {
+        if is_chat_media(msg) && seen.insert(msg.id.clone()) {
             messages.push(resolve_freshest_message(msg, clicked, fresh_cache));
         }
     }
-    if is_chat_image(clicked) && seen.insert(clicked.id.clone()) {
+    if is_chat_media(clicked) && seen.insert(clicked.id.clone()) {
         messages.push(resolve_freshest_message(clicked, clicked, fresh_cache));
     }
 
@@ -103,11 +105,11 @@ fn build_snapshot(
         .into_iter()
         .map(|message| {
             let download = if let Some(path) = media::local_media_path(&message, true) {
-                ImageDownload::Ready { path }
+                MediaDownload::Ready { path }
             } else {
-                ImageDownload::Idle
+                MediaDownload::Idle
             };
-            ChatImage { message, download }
+            ChatMedia { message, download }
         })
         .collect();
 
@@ -128,13 +130,13 @@ fn step_selected(current: usize, total: usize, next: bool) -> Option<usize> {
     }
 }
 
-pub(super) fn open_chat_image_viewer(state: &AppState, clicked: &MessageInfo) {
+pub(super) fn open_chat_media_viewer(state: &AppState, clicked: &MessageInfo) {
     let source_chat_mid = state
         .current_chat
         .borrow()
         .clone()
         .unwrap_or_else(|| clicked.chat_mid().to_string());
-    let loaded = state.chat_images.borrow().clone();
+    let loaded = state.chat_media.borrow().clone();
     let is_current = state.current_chat.borrow().as_deref() == Some(&source_chat_mid);
     let fresh_cache = if is_current {
         Some(state.media_msgs.borrow())
@@ -142,14 +144,14 @@ pub(super) fn open_chat_image_viewer(state: &AppState, clicked: &MessageInfo) {
         None
     };
     let (items, selected) = build_snapshot(&loaded, clicked, fresh_cache.as_deref());
-    let session = Rc::new(ChatImageSession {
+    let session = Rc::new(ChatMediaSession {
         media: media::MediaViewer::new(state),
         source_chat_mid,
-        model: RefCell::new(ChatImages { items, selected }),
+        model: RefCell::new(ChatMedias { items, selected }),
         closed: Cell::new(false),
         rendered: RefCell::new(None),
     });
-    let viewer = ChatImageViewer(session);
+    let viewer = ChatMediaViewer(session);
 
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -167,14 +169,14 @@ pub(super) fn open_chat_image_viewer(state: &AppState, clicked: &MessageInfo) {
         let Some(session) = weak_session.upgrade() else {
             return glib::Propagation::Proceed;
         };
-        let v = ChatImageViewer(session);
+        let v = ChatMediaViewer(session);
         match key {
             gdk::Key::Left => {
-                navigate_chat_image(&s, &v, false);
+                navigate_chat_media(&s, &v, false);
                 glib::Propagation::Stop
             }
             gdk::Key::Right => {
-                navigate_chat_image(&s, &v, true);
+                navigate_chat_media(&s, &v, true);
                 glib::Propagation::Stop
             }
             _ => glib::Propagation::Proceed,
@@ -193,16 +195,16 @@ pub(super) fn open_chat_image_viewer(state: &AppState, clicked: &MessageInfo) {
             session.closed.set(true);
             session.media.clear();
         }
-        s.chat_image_viewers.borrow_mut().retain(|v| !v.is_closed());
+        s.chat_media_viewers.borrow_mut().retain(|v| !v.is_closed());
         glib::Propagation::Proceed
     });
 
-    state.chat_image_viewers.borrow_mut().push(viewer.clone());
-    refresh_chat_image(state, &viewer);
+    state.chat_media_viewers.borrow_mut().push(viewer.clone());
+    refresh_chat_media(state, &viewer);
     viewer.0.media.window.present();
 }
 
-fn navigate_chat_image(state: &AppState, viewer: &ChatImageViewer, next: bool) {
+fn navigate_chat_media(state: &AppState, viewer: &ChatMediaViewer, next: bool) {
     if viewer.is_closed() {
         return;
     }
@@ -212,11 +214,11 @@ fn navigate_chat_image(state: &AppState, viewer: &ChatImageViewer, next: bool) {
     };
     if let Some(next_idx) = step_selected(current, total, next) {
         viewer.0.model.borrow_mut().selected = next_idx;
-        refresh_chat_image(state, viewer);
+        refresh_chat_media(state, viewer);
     }
 }
 
-fn request_chat_image_download(state: &AppState, viewer: &ChatImageViewer, index: usize) {
+fn request_chat_media_download(state: &AppState, viewer: &ChatMediaViewer, index: usize) {
     if viewer.is_closed() {
         return;
     }
@@ -236,11 +238,11 @@ fn request_chat_image_download(state: &AppState, viewer: &ChatImageViewer, index
     match state.sidecar.download_media(&source_chat, &msg_id) {
         Ok(request_id) => {
             if let Some(item) = viewer.0.model.borrow_mut().items.get_mut(index) {
-                item.download = ImageDownload::Loading { request_id };
+                item.download = MediaDownload::Loading { request_id };
             }
             state.pending.borrow_mut().insert(
                 request_id,
-                Pending::ChatImageDownload {
+                Pending::ChatMediaDownload {
                     viewer: Rc::downgrade(&viewer.0),
                     message_id: msg_id,
                 },
@@ -248,7 +250,7 @@ fn request_chat_image_download(state: &AppState, viewer: &ChatImageViewer, index
         }
         Err(e) => {
             if let Some(item) = viewer.0.model.borrow_mut().items.get_mut(index) {
-                item.download = ImageDownload::Failed {
+                item.download = MediaDownload::Failed {
                     error: e.to_string(),
                 };
             }
@@ -256,19 +258,19 @@ fn request_chat_image_download(state: &AppState, viewer: &ChatImageViewer, index
     }
 }
 
-fn retry_chat_image(state: &AppState, viewer: &ChatImageViewer) {
+fn retry_chat_media(state: &AppState, viewer: &ChatMediaViewer) {
     if viewer.is_closed() {
         return;
     }
     let selected = viewer.0.model.borrow().selected;
     if let Some(item) = viewer.0.model.borrow_mut().items.get_mut(selected) {
-        item.download = ImageDownload::Idle;
+        item.download = MediaDownload::Idle;
     }
-    request_chat_image_download(state, viewer, selected);
-    refresh_chat_image(state, viewer);
+    request_chat_media_download(state, viewer, selected);
+    refresh_chat_media(state, viewer);
 }
 
-fn refresh_chat_image(state: &AppState, viewer: &ChatImageViewer) {
+fn refresh_chat_media(state: &AppState, viewer: &ChatMediaViewer) {
     if viewer.is_closed() {
         return;
     }
@@ -283,13 +285,13 @@ fn refresh_chat_image(state: &AppState, viewer: &ChatImageViewer) {
         (selected, total, item)
     };
 
-    if matches!(item.download, ImageDownload::Idle) {
+    if matches!(item.download, MediaDownload::Idle) {
         if let Some(path) = media::local_media_path(&item.message, true) {
             if let Some(it) = viewer.0.model.borrow_mut().items.get_mut(selected) {
-                it.download = ImageDownload::Ready { path };
+                it.download = MediaDownload::Ready { path };
             }
         } else {
-            request_chat_image_download(state, viewer, selected);
+            request_chat_media_download(state, viewer, selected);
         }
     }
 
@@ -311,13 +313,13 @@ fn refresh_chat_image(state: &AppState, viewer: &ChatImageViewer) {
         let w = weak_session.clone();
         btn.connect_clicked(move |_| {
             if let Some(session) = w.upgrade() {
-                navigate_chat_image(&s, &ChatImageViewer(session), is_next);
+                navigate_chat_media(&s, &ChatMediaViewer(session), is_next);
             }
         });
     }
 
     let item = viewer.0.model.borrow().items[selected].clone();
-    let ready = if let ImageDownload::Ready { path } = &item.download {
+    let ready = if let MediaDownload::Ready { path } = &item.download {
         Some((selected, path.clone()))
     } else {
         None
@@ -329,7 +331,7 @@ fn refresh_chat_image(state: &AppState, viewer: &ChatImageViewer) {
             viewer.0.media.show(
                 state,
                 path,
-                "IMAGE",
+                &item.message.content_type,
                 &media::suggest_media_name(&item.message),
                 Some(&navigation),
                 Some(&item.message.id),
@@ -340,13 +342,13 @@ fn refresh_chat_image(state: &AppState, viewer: &ChatImageViewer) {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
             row.set_halign(gtk::Align::Center);
             let error = match &item.download {
-                ImageDownload::Failed { error } => Some(error.clone()),
+                MediaDownload::Failed { error } => Some(error.clone()),
                 _ => None,
             };
             let label = gtk::Label::new(Some(
                 &error
                     .clone()
-                    .unwrap_or_else(|| crate::i18n::t("loading_image")),
+                    .unwrap_or_else(|| crate::i18n::t("media_downloading")),
             ));
             label.set_wrap(true);
             let retry = gtk::Button::with_label(&crate::i18n::t("album_retry"));
@@ -355,7 +357,7 @@ fn refresh_chat_image(state: &AppState, viewer: &ChatImageViewer) {
             let w = Rc::downgrade(&viewer.0);
             retry.connect_clicked(move |_| {
                 if let Some(session) = w.upgrade() {
-                    retry_chat_image(&s, &ChatImageViewer(session));
+                    retry_chat_media(&s, &ChatMediaViewer(session));
                 }
             });
             row.append(&label);
@@ -373,10 +375,10 @@ fn refresh_chat_image(state: &AppState, viewer: &ChatImageViewer) {
     }
 }
 
-pub(super) fn finish_chat_image_download(
+pub(super) fn finish_chat_media_download(
     state: &AppState,
     request_id: u64,
-    weak_viewer: &Weak<ChatImageSession>,
+    weak_viewer: &Weak<ChatMediaSession>,
     message_id: &str,
     result: Result<String, String>,
 ) {
@@ -397,7 +399,7 @@ pub(super) fn finish_chat_image_download(
     };
 
     match item.download {
-        ImageDownload::Loading {
+        MediaDownload::Loading {
             request_id: expected_id,
         } if expected_id == request_id => {}
         _ => return,
@@ -405,66 +407,74 @@ pub(super) fn finish_chat_image_download(
 
     match result {
         Ok(path) => {
-            item.download = ImageDownload::Ready { path: path.clone() };
-            item.message.image_path = Some(path.clone());
+            item.download = MediaDownload::Ready { path: path.clone() };
+            if item.message.content_type.eq_ignore_ascii_case("IMAGE") {
+                item.message.image_path = Some(path.clone());
+            }
             item.message.file_path = Some(path.clone());
             if state.current_chat.borrow().as_deref() == Some(&session.source_chat_mid) {
                 if let Some(msg) = state.media_msgs.borrow_mut().get_mut(message_id) {
-                    msg.image_path = Some(path.clone());
+                    if msg.content_type.eq_ignore_ascii_case("IMAGE") {
+                        msg.image_path = Some(path.clone());
+                    }
                     msg.file_path = Some(path.clone());
                 }
-                state
-                    .media_ready_paths
-                    .borrow_mut()
-                    .insert(message_id.to_string(), path.clone());
-                for chat_msg in state.chat_images.borrow_mut().iter_mut() {
+                if item.message.content_type.eq_ignore_ascii_case("IMAGE") {
+                    state
+                        .media_ready_paths
+                        .borrow_mut()
+                        .insert(message_id.to_string(), path.clone());
+                }
+                for chat_msg in state.chat_media.borrow_mut().iter_mut() {
                     if chat_msg.id == message_id {
-                        chat_msg.image_path = Some(path.clone());
+                        if chat_msg.content_type.eq_ignore_ascii_case("IMAGE") {
+                            chat_msg.image_path = Some(path.clone());
+                        }
                         chat_msg.file_path = Some(path.clone());
                     }
                 }
             }
         }
         Err(error) => {
-            item.download = ImageDownload::Failed { error };
+            item.download = MediaDownload::Failed { error };
         }
     }
     let is_selected = model.selected == index;
     drop(model);
     if is_selected {
-        refresh_chat_image(state, &ChatImageViewer(session));
+        refresh_chat_media(state, &ChatMediaViewer(session));
     }
 }
 
-pub(super) fn fail_pending_chat_images(state: &AppState, error: &str) {
+pub(super) fn fail_pending_chat_media(state: &AppState, error: &str) {
     let mut pending = state.pending.borrow_mut();
     let image_ids: Vec<u64> = pending
         .iter()
         .filter_map(|(id, p)| match p {
-            Pending::ChatImageDownload { .. } => Some(*id),
+            Pending::ChatMediaDownload { .. } => Some(*id),
             _ => None,
         })
         .collect();
     let mut to_fail = Vec::new();
     for id in image_ids {
-        if let Some(Pending::ChatImageDownload { viewer, message_id }) = pending.remove(&id) {
+        if let Some(Pending::ChatMediaDownload { viewer, message_id }) = pending.remove(&id) {
             to_fail.push((viewer, message_id, id));
         }
     }
     drop(pending);
     for (viewer, message_id, id) in to_fail {
-        finish_chat_image_download(state, id, &viewer, &message_id, Err(error.to_string()));
+        finish_chat_media_download(state, id, &viewer, &message_id, Err(error.to_string()));
     }
 
-    for viewer in state.chat_image_viewers.borrow().iter() {
+    for viewer in state.chat_media_viewers.borrow().iter() {
         if viewer.is_closed() {
             continue;
         }
         let mut model = viewer.0.model.borrow_mut();
         let mut changed = false;
         for item in model.items.iter_mut() {
-            if matches!(item.download, ImageDownload::Loading { .. }) {
-                item.download = ImageDownload::Failed {
+            if matches!(item.download, MediaDownload::Loading { .. }) {
+                item.download = MediaDownload::Failed {
                     error: error.to_string(),
                 };
                 changed = true;
@@ -472,7 +482,7 @@ pub(super) fn fail_pending_chat_images(state: &AppState, error: &str) {
         }
         drop(model);
         if changed {
-            refresh_chat_image(state, viewer);
+            refresh_chat_media(state, viewer);
         }
     }
 }
@@ -493,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn deduplicates_and_orders_chat_images_chronologically() {
+    fn deduplicates_and_orders_chat_media_chronologically() {
         let loaded = vec![
             make_msg("img-3", 300, "IMAGE"),
             make_msg("img-1", 100, "IMAGE"),
@@ -510,8 +520,11 @@ mod tests {
         let (items, selected) = build_snapshot(&loaded, &clicked, None);
 
         let ids: Vec<&str> = items.iter().map(|item| item.message.id.as_str()).collect();
-        assert_eq!(ids, vec!["img-1", "img-dup", "img-2a", "img-2b", "img-3"]);
-        assert_eq!(selected, 2);
+        assert_eq!(
+            ids,
+            vec!["img-1", "video-1", "img-dup", "img-2a", "img-2b", "img-3"]
+        );
+        assert_eq!(selected, 3);
         assert_eq!(items[selected].message.id, "img-2a");
     }
 
@@ -531,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_excludes_stickers_and_non_images_and_empty_ids() {
+    fn snapshot_excludes_stickers_and_non_media_and_empty_ids() {
         let loaded = vec![
             make_msg("sticker", 10, "STICKER"),
             make_msg("video", 20, "VIDEO"),
@@ -542,9 +555,10 @@ mod tests {
         ];
         let clicked = make_msg("img", 60, "image");
         let (items, selected) = build_snapshot(&loaded, &clicked, None);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].message.id, "img");
-        assert_eq!(selected, 0);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].message.id, "video");
+        assert_eq!(items[1].message.id, "img");
+        assert_eq!(selected, 1);
     }
 
     #[test]
@@ -564,7 +578,7 @@ mod tests {
         let (items_clicked_fresh, _) = build_snapshot(&stale_loaded, &clicked, None);
         assert_eq!(
             items_clicked_fresh[0].download,
-            ImageDownload::Ready {
+            MediaDownload::Ready {
                 path: full_img.to_str().unwrap().to_string()
             }
         );
@@ -579,7 +593,7 @@ mod tests {
             build_snapshot(&stale_loaded, &default_clicked, Some(&media_msgs));
         assert_eq!(
             items_cache_fresh[1].download,
-            ImageDownload::Ready {
+            MediaDownload::Ready {
                 path: full_img.to_str().unwrap().to_string()
             }
         );
@@ -598,9 +612,35 @@ mod tests {
         msg.image_path = Some(thumb_path.to_str().unwrap().to_string());
 
         let (items, _) = build_snapshot(&[msg.clone()], &msg, None);
-        assert_eq!(items[0].download, ImageDownload::Idle);
+        assert_eq!(items[0].download, MediaDownload::Idle);
 
         let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn video_snapshot_uses_full_file_and_preserves_thumbnail() {
+        let temp = std::env::temp_dir().join(format!("video-snapshot-{}", std::process::id()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let thumb = temp.join("clip.thumb.jpg");
+        let full = temp.join("clip.mp4");
+        std::fs::write(&thumb, b"thumbnail").unwrap();
+        std::fs::write(&full, b"video").unwrap();
+        let mut video = make_msg("clip", 200, "VIDEO");
+        video.image_path = Some(thumb.to_string_lossy().into_owned());
+        let (items, _) = build_snapshot(&[video.clone()], &video, None);
+        assert_eq!(items[0].download, MediaDownload::Idle);
+        video.file_path = Some(full.to_string_lossy().into_owned());
+        let image = make_msg("image", 100, "IMAGE");
+        let (items, selected) = build_snapshot(&[video.clone(), image], &video, None);
+        assert_eq!(selected, 1);
+        assert_eq!(
+            items[selected].download,
+            MediaDownload::Ready {
+                path: full.to_string_lossy().into_owned()
+            }
+        );
+        assert_eq!(items[selected].message.image_path, video.image_path);
+        std::fs::remove_dir_all(temp).unwrap();
     }
 
     #[test]
@@ -652,6 +692,15 @@ mod tests {
             child = w.next_sibling();
         }
         widgets
+    }
+
+    fn video_stream(win: &gtk::Window) -> gtk::MediaStream {
+        descendants(win.upcast_ref())
+            .into_iter()
+            .find_map(|widget| widget.downcast::<gtk::Video>().ok())
+            .unwrap()
+            .media_stream()
+            .unwrap()
     }
 
     fn drain() {
@@ -712,7 +761,17 @@ mod tests {
 
     #[test]
     #[ignore = "requires a GTK display"]
-    fn gtk_chat_image_viewer_navigation_retry_and_isolation() {
+    fn gtk_chat_media_viewer_navigation_retry_and_isolation() {
+        gtk_viewer_fixture(false);
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display, ffmpeg and a GTK video backend"]
+    fn gtk_chat_media_viewer_video_playback_navigation_and_close() {
+        gtk_viewer_fixture(true);
+    }
+
+    fn gtk_viewer_fixture(with_video: bool) {
         libadwaita::init().unwrap();
         let temp =
             std::env::temp_dir().join(format!("line-chat-viewer-fixture-{}", std::process::id()));
@@ -751,12 +810,49 @@ mod tests {
         let img0_path = temp.join("msg-0.full.png");
         pixbuf.fill(0xff0000ff);
         pixbuf.savev(&img0_path, "png", &[]).unwrap();
-        let img1_path = temp.join("msg-1.full.png");
+        let img1_path = temp.join(if with_video {
+            "msg-1.mp4"
+        } else {
+            "msg-1.full.png"
+        });
         pixbuf.fill(0x00ff00ff);
         pixbuf.savev(&img1_path, "png", &[]).unwrap();
-        let img2_path = temp.join("msg-2.full.png");
+        let img2_path = temp.join(if with_video {
+            "msg-2.mp4"
+        } else {
+            "msg-2.full.png"
+        });
         pixbuf.fill(0x0000ffff);
         pixbuf.savev(&img2_path, "png", &[]).unwrap();
+
+        if with_video {
+            let output = std::process::Command::new("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc=size=160x120:rate=15",
+                    "-t",
+                    "8",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                ])
+                .arg(&img1_path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            std::fs::copy(&img1_path, &img2_path).unwrap();
+        }
 
         let msg0: MessageInfo = serde_json::from_value(serde_json::json!({
             "id": "msg-0", "createdTime": 1000, "contentType": "IMAGE", "text": "[Image]",
@@ -764,31 +860,32 @@ mod tests {
         }))
         .unwrap();
         let msg1: MessageInfo = serde_json::from_value(serde_json::json!({
-            "id": "msg-1", "createdTime": 2000, "contentType": "IMAGE", "text": "[Image]"
+            "id": "msg-1", "createdTime": 2000, "contentType": if with_video { "VIDEO" } else { "IMAGE" }, "text": "[Media]",
+            "imagePath": if with_video { Some(img0_path.to_str().unwrap()) } else { None }
         }))
         .unwrap();
         let msg2: MessageInfo = serde_json::from_value(serde_json::json!({
-            "id": "msg-2", "createdTime": 3000, "contentType": "IMAGE", "text": "[Image]"
+            "id": "msg-2", "createdTime": 3000, "contentType": if with_video { "VIDEO" } else { "IMAGE" }, "text": "[Media]"
         }))
         .unwrap();
 
         apply_messages(&state, vec![msg0.clone(), msg1.clone(), msg2.clone()]);
-        assert_eq!(state.chat_images.borrow().len(), 3);
-        let chat_images = state.chat_images.borrow();
-        let initial_loaded_ids: Vec<&str> = chat_images.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(state.chat_media.borrow().len(), 3);
+        let chat_media = state.chat_media.borrow();
+        let initial_loaded_ids: Vec<&str> = chat_media.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(initial_loaded_ids, vec!["msg-0", "msg-1", "msg-2"]);
-        drop(chat_images);
+        drop(chat_media);
         drain();
 
-        state.chat_images.borrow_mut()[0].image_path = None;
-        state.chat_images.borrow_mut()[0].file_path = None;
-        assert!(state.chat_images.borrow()[0].image_path.is_none());
+        state.chat_media.borrow_mut()[0].image_path = None;
+        state.chat_media.borrow_mut()[0].file_path = None;
+        assert!(state.chat_media.borrow()[0].image_path.is_none());
         assert!(state.media_msgs.borrow()["msg-0"].image_path.is_some());
 
-        open_chat_image_viewer(&state, &msg0);
+        open_chat_media_viewer(&state, &msg0);
         drain();
 
-        let viewer = state.chat_image_viewers.borrow().last().unwrap().clone();
+        let viewer = state.chat_media_viewers.borrow().last().unwrap().clone();
         let viewer_win = viewer.window();
         assert!(viewer_win.is_visible());
         assert_eq!(
@@ -838,10 +935,10 @@ mod tests {
 
         viewer_win.close();
         drain();
-        assert_eq!(state.chat_image_viewers.borrow().len(), 0);
-        open_chat_image_viewer(&state, &msg0);
+        assert_eq!(state.chat_media_viewers.borrow().len(), 0);
+        open_chat_media_viewer(&state, &msg0);
         drain();
-        let viewer = state.chat_image_viewers.borrow().last().unwrap().clone();
+        let viewer = state.chat_media_viewers.borrow().last().unwrap().clone();
         let viewer_win = viewer.window();
         assert_eq!(
             label_containing(viewer_win.upcast_ref(), "1 / 3").text(),
@@ -931,7 +1028,28 @@ mod tests {
             1
         );
 
+        let playing_stream = if with_video {
+            let stream = video_stream(&viewer_win);
+            wait_for(|| stream.is_prepared() || stream.error().is_some());
+            assert!(stream.error().is_none(), "{:?}", stream.error());
+            wait_for(|| stream.timestamp() > 0);
+            assert_eq!(
+                state.media_msgs.borrow()["msg-1"].image_path.as_deref(),
+                img0_path.to_str()
+            );
+            assert!(!state.media_ready_paths.borrow().contains_key("msg-1"));
+            assert_eq!(
+                state.chat_media.borrow()[1].image_path.as_deref(),
+                img0_path.to_str()
+            );
+            Some(stream)
+        } else {
+            None
+        };
         next_btn(&viewer_win).emit_clicked();
+        if let Some(stream) = playing_stream {
+            assert!(!stream.is_playing());
+        }
         drain();
         assert_eq!(
             label_containing(viewer_win.upcast_ref(), "3 / 3").text(),
@@ -1001,7 +1119,7 @@ mod tests {
         drop(viewer);
         drop(viewer_win);
         assert!(weak_session.upgrade().is_none());
-        assert!(state.chat_image_viewers.borrow().is_empty());
+        assert!(state.chat_media_viewers.borrow().is_empty());
 
         respond(
             &state,
@@ -1012,7 +1130,7 @@ mod tests {
         );
         drain();
         assert!(weak_session.upgrade().is_none());
-        assert!(state.chat_image_viewers.borrow().is_empty());
+        assert!(state.chat_media_viewers.borrow().is_empty());
         assert_eq!(
             gtk::Window::list_toplevels()
                 .into_iter()
@@ -1032,11 +1150,11 @@ mod tests {
         }))
         .unwrap();
         apply_messages(&state, vec![beta_msg.clone()]);
-        open_chat_image_viewer(&state, &beta_msg);
+        open_chat_media_viewer(&state, &beta_msg);
         drain();
 
-        assert_eq!(state.chat_image_viewers.borrow().len(), 1);
-        let viewer2 = state.chat_image_viewers.borrow().last().unwrap().clone();
+        assert_eq!(state.chat_media_viewers.borrow().len(), 1);
+        let viewer2 = state.chat_media_viewers.borrow().last().unwrap().clone();
         let viewer2_win = viewer2.window();
         assert!(viewer2_win.is_visible());
         assert_eq!(
@@ -1053,7 +1171,50 @@ mod tests {
         drop(viewer2);
         drop(viewer2_win);
         assert!(weak_session2.upgrade().is_none());
-        assert!(state.chat_image_viewers.borrow().is_empty());
+        assert!(state.chat_media_viewers.borrow().is_empty());
+
+        if with_video {
+            clear_messages(&state);
+            let mut cached_video = msg1.clone();
+            cached_video.file_path = Some(img1_path.to_string_lossy().into_owned());
+            apply_messages(&state, vec![cached_video.clone()]);
+            media::request_media_download(&state, &cached_video, "open_viewer");
+            drain();
+            let video_viewer = state.chat_media_viewers.borrow().last().unwrap().clone();
+            let stream = video_stream(&video_viewer.window());
+            wait_for(|| stream.is_prepared() || stream.error().is_some());
+            assert!(stream.error().is_none(), "{:?}", stream.error());
+            wait_for(|| stream.timestamp() > 0);
+            video_viewer.window().close();
+            drain();
+            assert!(!stream.is_playing());
+            assert!(state.chat_media_viewers.borrow().is_empty());
+
+            media::open_media_viewer(
+                &state,
+                img1_path.to_str().unwrap(),
+                "VIDEO",
+                "clip.mp4",
+                None,
+            );
+            drain();
+            let standalone = gtk::Window::list_toplevels()
+                .into_iter()
+                .filter_map(|window| window.downcast::<gtk::Window>().ok())
+                .find(|window| {
+                    window.is_visible()
+                        && window.title().as_deref()
+                            == Some(crate::i18n::t("media_viewer_title").as_str())
+                })
+                .unwrap();
+            let stream = video_stream(&standalone);
+            wait_for(|| stream.is_prepared() || stream.error().is_some());
+            assert!(stream.error().is_none(), "{:?}", stream.error());
+            wait_for(|| stream.timestamp() > 0);
+            standalone.close();
+            drain();
+            assert!(!stream.is_playing());
+        }
 
         for win in gtk::Window::list_toplevels()
             .into_iter()
