@@ -1,4 +1,5 @@
 import { locationPayload } from "./locations.ts";
+import { patchMessageDecryption } from "./message_decryption.ts";
 import { incomingReply } from "./replies.ts";
 /**
  * LINE protocol sidecar for line-gtk.
@@ -484,21 +485,7 @@ async function fromRawTalkSafe(raw: unknown): Promise<TalkMessage> {
 
 function patchE2eeGuards() {
   if (!client) return;
-  const e2ee = client.base.e2ee as unknown as {
-    decryptE2EEMessage: (
-      m: Record<string, unknown>,
-    ) => Promise<Record<string, unknown>>;
-  };
-  const orig = e2ee.decryptE2EEMessage.bind(e2ee);
-  e2ee.decryptE2EEMessage = async (messageObj) => {
-    const msg = normalizeRaw(messageObj);
-    try {
-      return await orig(msg);
-    } catch (e) {
-      console.error("[e2ee decrypt fallback]", e);
-      return msg;
-    }
-  };
+  patchMessageDecryption(client.base.e2ee);
 }
 
 async function refetchMessageData(
