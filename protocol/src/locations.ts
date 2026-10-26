@@ -5,12 +5,21 @@ export type LocationInfo = {
   longitude: number;
 };
 
+function coordinate(value: unknown): number | null {
+  if (typeof value === "number") return value;
+  if (typeof value !== "string") return null;
+  const decimal = value.trim();
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(decimal)) return null;
+  return Number(decimal);
+}
+
 export function parseLocation(value: unknown): LocationInfo | null {
   if (!value || typeof value !== "object") return null;
   if (!("latitude" in value) || !("longitude" in value)) return null;
-  const { latitude, longitude } = value;
+  const latitude = coordinate(value.latitude);
+  const longitude = coordinate(value.longitude);
   if (
-    typeof latitude !== "number" || typeof longitude !== "number" ||
+    latitude === null || longitude === null ||
     !Number.isFinite(latitude) || !Number.isFinite(longitude) ||
     Math.abs(latitude) > 90 || Math.abs(longitude) > 180
   ) return null;
@@ -26,7 +35,7 @@ export function parseLocation(value: unknown): LocationInfo | null {
   };
 }
 
-export const LOCATION_METADATA_VERSION = 1;
+export const LOCATION_METADATA_VERSION = 2;
 
 export function needsLocationMetadataRefresh(
   messages: Record<string, unknown>[],

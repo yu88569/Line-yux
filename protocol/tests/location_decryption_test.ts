@@ -16,6 +16,24 @@ const point = {
   longitude: -120.5,
 };
 
+const nativePoint: Parameters<
+  BaseClient["e2ee"]["encryptE2EELocationMessage"]
+>[4] = {
+  ...point,
+  phone: "",
+  categoryId: "",
+  provider: 0,
+  altitudeMeters: 0,
+  accuracy: {
+    radiusMeters: 0,
+    radiusConfidence: 0,
+    altitudeAccuracy: 0,
+    velocityAccuracy: 0,
+    bearingAccuracy: 0,
+    accuracyMode: 0,
+  },
+};
+
 function encryptedFixture(options: {
   mine: boolean;
   group: boolean;
@@ -27,6 +45,7 @@ function encryptedFixture(options: {
     new Uint8Array(32).fill(22),
   );
   const groupKey = nacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(33));
+  const newerKey = nacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(99));
   const base = new BaseClient({
     device: "ANDROIDSECONDARY",
     fetch: () => {
@@ -42,7 +61,13 @@ function encryptedFixture(options: {
     value: { mid: options.mine ? sender : receiver },
   });
   Object.defineProperty(base.e2ee, "getE2EESelfKeyData", {
-    value: () => Promise.resolve(selfData),
+    value: () =>
+      Promise.resolve(
+        options.group ? selfData : {
+          privKey: Buffer.from(newerKey.secretKey).toString("base64"),
+          pubKey: Buffer.from(newerKey.publicKey).toString("base64"),
+        },
+      ),
   });
   Object.defineProperty(base.e2ee, "getE2EESelfKeyDataByKeyId", {
     value: (keyId: number) => {
@@ -78,19 +103,32 @@ function encryptedFixture(options: {
       Buffer.from(senderKey.secretKey),
       Buffer.from(receiverKey.publicKey),
     );
-  const payload = options.stringCoordinates
-    ? { latitude: "0", longitude: "-120.5", address: point.address }
-    : point;
-  const chunks = base.e2ee.encryptE2EEMessageByData(
-    11,
-    options.group ? 33 : 22,
-    Buffer.from(shared),
-    2,
-    { location: payload },
-    to,
-    sender,
-    15,
-  );
+  const chunks = options.stringCoordinates
+    ? base.e2ee.encryptE2EEMessageByData(
+      11,
+      options.group ? 33 : 22,
+      Buffer.from(shared),
+      2,
+      {
+        location: {
+          latitude: "0",
+          longitude: "-120.5",
+          address: point.address,
+        },
+      },
+      to,
+      sender,
+      15,
+    )
+    : base.e2ee.encryptE2EELocationMessage(
+      11,
+      options.group ? 33 : 22,
+      Buffer.from(shared),
+      2,
+      nativePoint,
+      to,
+      sender,
+    );
   const raw = {
     id: "123",
     from: sender,
@@ -103,6 +141,43 @@ function encryptedFixture(options: {
   patchMessageDecryption(base.e2ee);
   return { base, client: new Client(base), raw };
 }
+
+Deno.test("location decrypt preserves plaintext and missing-key fallback", async () => {
+  const base = new BaseClient({
+    device: "ANDROIDSECONDARY",
+    fetch: () => {
+      throw Error("missing key fixture cannot use network");
+    },
+  });
+  const client = new Client(base);
+  patchMessageDecryption(base.e2ee);
+  const { raw } = encryptedFixture({
+    mine: false,
+    group: false,
+    contentType: "LOCATION",
+    stringCoordinates: true,
+  });
+  const plain: Parameters<typeof TalkMessage.fromRawTalk>[0] = {
+    ...raw,
+    chunks: [],
+    location: nativePoint,
+  };
+  const plainMessage = await TalkMessage.fromRawTalk(plain, client);
+  assertEquals(locationPayload(plainMessage.raw, "LOCATION").location, point);
+  const unavailable = await TalkMessage.fromRawTalk(raw, client);
+  assertEquals(locationPayload(unavailable.raw, "LOCATION").location, null);
+  const text = {
+    ...raw,
+    contentType: "NONE" as const,
+    chunks: [],
+    text: "Text",
+  };
+  const textMessage = await TalkMessage.fromRawTalk({
+    ...text,
+    contentMetadata: {},
+  }, client);
+  assertEquals(textMessage.text, "Text");
+});
 
 for (const mine of [false, true]) {
   for (const isGroup of [false, true]) {

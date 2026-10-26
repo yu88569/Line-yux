@@ -1,5 +1,6 @@
 import { assertEquals } from "@std/assert";
 import {
+  LOCATION_METADATA_VERSION,
   needsLocationMetadataRefresh,
   parseLocation,
 } from "../src/locations.ts";
@@ -21,9 +22,21 @@ Deno.test("location validates coordinates without inventing missing points", () 
       { ...location, longitude: 181 },
       { ...location, latitude: NaN },
       { ...location, longitude: Infinity },
-      { ...location, latitude: "0" },
+      { ...location, latitude: "" },
+      { ...location, latitude: "  " },
+      { ...location, latitude: "0x10" },
+      { ...location, latitude: "Infinity" },
+      { ...location, latitude: false },
+      { ...location, latitude: "NaN" },
+      { ...location, longitude: "181" },
     ]
   ) assertEquals(parseLocation(value), null);
+  assertEquals(parseLocation({ latitude: "0", longitude: "-120" }), {
+    latitude: 0,
+    longitude: -120,
+    title: "",
+    address: "",
+  });
   assertEquals(
     needsLocationMetadataRefresh([{ contentType: "LOCATION" }]),
     true,
@@ -31,7 +44,7 @@ Deno.test("location validates coordinates without inventing missing points", () 
   assertEquals(
     needsLocationMetadataRefresh([{
       contentType: "LOCATION",
-      locationMetadataVersion: 1,
+      locationMetadataVersion: LOCATION_METADATA_VERSION,
       location: null,
     }]),
     false,
@@ -67,7 +80,7 @@ Deno.test("native location send omits text so E2EE encrypts coordinates", async 
       id: "123",
       contentType: "LOCATION",
       location,
-      locationMetadataVersion: 1,
+      locationMetadataVersion: LOCATION_METADATA_VERSION,
     },
   }]);
   await service.sendLocation(2, mid, { ...location, latitude: 100 });
@@ -76,45 +89,15 @@ Deno.test("native location send omits text so E2EE encrypts coordinates", async 
   assertEquals(results.slice(1), ["invalid_location", "invalid_chat"]);
 });
 
-Deno.test("native E2EE location reaches normalized receive payload", async () => {
-  const { BaseClient } = await import("@evex/linejs/base");
-  const { Client, TalkMessage } = await import("@evex/linejs");
+Deno.test("location summaries preserve plaintext and unavailable points", async () => {
   const { locationPayload } = await import("../src/locations.ts");
-  const base = new BaseClient({
-    device: "ANDROIDSECONDARY",
-    fetch: () => {
-      throw Error("network forbidden");
-    },
-  });
-  const client = new Client(base);
-  let decrypts = 0;
-  Object.defineProperty(base.e2ee, "decryptE2EELocationMessage", {
-    value: () => {
-      decrypts++;
-      return Promise.resolve(location);
-    },
-  });
-  const raw = {
-    id: "123",
-    contentType: "LOCATION",
-    contentMetadata: { e2eeVersion: "2" },
-    chunks: [],
-    from: "u111",
-    to: "u222",
-  } as unknown as Parameters<typeof TalkMessage.fromRawTalk>[0];
-  const message = await TalkMessage.fromRawTalk(raw, client);
-  assertEquals(decrypts, 1);
-  assertEquals(locationPayload(message.raw, "LOCATION"), {
-    location,
-    locationMetadataVersion: 1,
-  });
   assertEquals(locationPayload({ location }, "LOCATION"), {
     location,
-    locationMetadataVersion: 1,
+    locationMetadataVersion: LOCATION_METADATA_VERSION,
   });
   assertEquals(locationPayload({}, "LOCATION"), {
     location: null,
-    locationMetadataVersion: 1,
+    locationMetadataVersion: LOCATION_METADATA_VERSION,
   });
   assertEquals(locationPayload({ location }, "NONE"), {
     location: null,
@@ -138,7 +121,13 @@ Deno.test("legacy location cache refetches instead of returning stripped points 
     }),
     msgCache: new Map([[mid, {
       at: Date.now(),
-      messages: [{ id: "123", contentType: "LOCATION", text: "[LOCATION]" }],
+      messages: [{
+        id: "123",
+        contentType: "LOCATION",
+        text: "[LOCATION]",
+        location: null,
+        locationMetadataVersion: 1,
+      }],
     }]]),
     boxCursor: new Map([[mid, { messageId: 1, deliveredTime: 1 }]]),
     refreshCachePolicy: () => Promise.resolve({}),
