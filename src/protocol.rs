@@ -111,8 +111,38 @@ pub struct ReplyTarget {
     pub preview: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LocationInfo {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub address: String,
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
+impl LocationInfo {
+    pub fn is_valid(&self) -> bool {
+        self.latitude.is_finite()
+            && self.longitude.is_finite()
+            && (-90.0..=90.0).contains(&self.latitude)
+            && (-180.0..=180.0).contains(&self.longitude)
+    }
+
+    pub fn maps_url(&self) -> Option<String> {
+        self.is_valid().then(|| {
+            format!(
+                "https://www.google.com/maps/search/?api=1&query={}%2C{}",
+                self.latitude, self.longitude
+            )
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MessageInfo {
+    #[serde(default)]
+    pub location: Option<Box<LocationInfo>>,
     #[serde(default)]
     pub reply: Option<Box<ReplyTarget>>,
     #[serde(default)]

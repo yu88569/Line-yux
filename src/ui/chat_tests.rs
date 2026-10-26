@@ -1023,3 +1023,189 @@ fn gtk_message_reply_right_click_and_lifecycle() {
     state.window.close();
     let _ = std::fs::remove_dir_all(temp);
 }
+
+#[test]
+#[ignore = "requires GTK display"]
+fn gtk_location_receive_send_and_failure() {
+    let (temp, _, app, state) = chat_fixture("location", "dev.linegtk.LocationFixture");
+    let log = temp.join("requests.jsonl");
+    std::fs::write(
+        temp.join("protocol/line-gtk-protocol"),
+        format!(
+            "#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; done\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    state.sidecar.restart().unwrap();
+    *state.session_ready.borrow_mut() = true;
+    let peer = "u11111111111111111111111111111111";
+    *state.current_chat.borrow_mut() = Some(peer.into());
+    state.stack.set_visible_child_name("shell");
+    state.msg_stack.set_visible_child_name("list");
+    state.window.present();
+    let incoming: MessageInfo = serde_json::from_value(serde_json::json!({"id":"location-1","from":peer,"to":"u22222222222222222222222222222222","contentType":"LOCATION","location":{"title":"Bangkok","address":"Thailand","latitude":13.7563,"longitude":100.5018}})).unwrap();
+    append_message(&state, &incoming, false);
+    wait_for(|| {
+        descendants(state.window.upcast_ref())
+            .iter()
+            .any(|w| w.is::<gtk::LinkButton>() && w.is_mapped())
+    });
+    let link = descendants(state.window.upcast_ref())
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::LinkButton>().ok())
+        .unwrap();
+    assert_eq!(
+        link.uri(),
+        "https://www.google.com/maps/search/?api=1&query=13.7563%2C100.5018"
+    );
+    let opened = Rc::new(RefCell::new(false));
+    link.connect_activate_link({
+        let opened = opened.clone();
+        move |_| {
+            *opened.borrow_mut() = true;
+            glib::Propagation::Stop
+        }
+    });
+    link.emit_by_name::<bool>("activate-link", &[]);
+    assert!(*opened.borrow());
+    wire_actions(&state);
+    *state.reply_target.borrow_mut() = Some(crate::protocol::ReplyTarget {
+        chat_mid: peer.into(),
+        id: "123".into(),
+        sender: "Alice".into(),
+        preview: "Reply".into(),
+    });
+    state.location_btn.emit_clicked();
+    drain();
+    assert_eq!(app.windows().len(), 1);
+    clear_reply(&state);
+    state.location_btn.emit_clicked();
+    drain();
+    let window = app
+        .windows()
+        .into_iter()
+        .find(|w| w.as_ptr() != state.window.as_ptr().cast())
+        .unwrap();
+    wait_for(|| window.is_mapped() && window.width() > 0);
+    let paintable = gtk::WidgetPaintable::new(Some(&window));
+    let frame = Rc::new(std::cell::Cell::new(false));
+    let ready = frame.clone();
+    window.add_tick_callback(move |_, _| {
+        ready.set(true);
+        glib::ControlFlow::Break
+    });
+    wait_for(|| frame.get());
+    let snapshot = gtk::Snapshot::new();
+    paintable.snapshot(&snapshot, window.width() as f64, window.height() as f64);
+    if let Some(node) = snapshot.to_node() {
+        window
+            .renderer()
+            .unwrap()
+            .render_texture(&node, None)
+            .save_to_png("/tmp/line-gtk-location-dialog.png")
+            .unwrap();
+    }
+    let entries: Vec<gtk::Entry> = descendants(window.upcast_ref())
+        .into_iter()
+        .filter_map(|w| w.downcast().ok())
+        .collect();
+    assert_eq!(entries.len(), 3);
+    entries[0].set_text("0, -120.123456789");
+    entries[1].set_text("Test place");
+    entries[2].set_text("Test address");
+    let send = descendants(window.upcast_ref())
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Button>().ok())
+        .find(|b| b.has_css_class("suggested-action"))
+        .unwrap();
+    *state.current_chat.borrow_mut() = Some("c33333333333333333333333333333333".into());
+    *state.reply_target.borrow_mut() = Some(crate::protocol::ReplyTarget {
+        chat_mid: peer.into(),
+        id: "123".into(),
+        sender: "Alice".into(),
+        preview: "Reply".into(),
+    });
+    send.emit_clicked();
+    drain();
+    assert!(
+        !std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("send_location")
+    );
+    clear_reply(&state);
+    send.emit_clicked();
+    wait_for(|| {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("send_location")
+    });
+    let requests: Vec<serde_json::Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .filter_map(|s| serde_json::from_str(s).ok())
+        .collect();
+    let request = requests
+        .iter()
+        .find(|r| r["method"] == "send_location")
+        .unwrap();
+    assert_eq!(request["params"]["chatMid"], peer);
+    assert_eq!(request["params"]["location"]["longitude"], -120.123456789);
+    assert!(!send.is_sensitive());
+    let id = request["id"].as_u64().unwrap();
+    handle_event(
+        &state,
+        ProtocolEvent::Response {
+            id,
+            ok: false,
+            result: serde_json::Value::Null,
+            error: Some("Test failure".into()),
+        },
+    );
+    assert!(send.is_sensitive());
+    assert_eq!(entries[0].text(), "0, -120.123456789");
+    let previous = std::fs::read_to_string(&log).unwrap();
+    entries[0].set_text("NaN,0");
+    send.emit_clicked();
+    drain();
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), previous);
+    entries[0].set_text("0, -120.123456789");
+    send.emit_clicked();
+    wait_for(|| {
+        state
+            .pending
+            .borrow()
+            .values()
+            .any(|p| matches!(p, Pending::LocationSend { .. }))
+    });
+    let id = *state
+        .pending
+        .borrow()
+        .iter()
+        .find(|(_, p)| matches!(p, Pending::LocationSend { .. }))
+        .unwrap()
+        .0;
+    *state.current_chat.borrow_mut() = Some(peer.into());
+    handle_event(
+        &state,
+        ProtocolEvent::Response {
+            id,
+            ok: true,
+            error: None,
+            result: serde_json::json!({"message":{"id":"sent-location","to":peer,"mine":true,"contentType":"LOCATION","location":{"latitude":0,"longitude":-120.123456789,"title":"Test place","address":"Test address"}}}),
+        },
+    );
+    assert!(!window.is_visible());
+    assert!(state.seen_msg_ids.borrow().contains("sent-location"));
+    let unavailable = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    locations::append_location_card(&unavailable, None);
+    assert!(
+        !descendants(unavailable.upcast_ref())
+            .iter()
+            .any(|w| w.is::<gtk::LinkButton>())
+    );
+    state.window.destroy();
+    state.discord.shutdown();
+    drain();
+    std::fs::remove_dir_all(temp).unwrap();
+}

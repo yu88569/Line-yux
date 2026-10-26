@@ -1,3 +1,4 @@
+import { locationPayload } from "./locations.ts";
 import { incomingReply } from "./replies.ts";
 /**
  * LINE protocol sidecar for line-gtk.
@@ -793,6 +794,7 @@ async function summarizeTalkMessage(
     createdTime?: number | string | bigint;
     contentType?: string | number;
     contentMetadata?: Record<string, string>;
+    location?: unknown;
     chunks?: unknown[];
     relatedMessageId?: string;
     messageRelationType?: string | number;
@@ -994,6 +996,7 @@ async function summarizeTalkMessage(
     mine: isMineFrom(raw.from),
     createdTime: Number(raw.createdTime ?? 0),
     contentType,
+    ...locationPayload(raw, contentType),
     imagePath,
     imageUrl,
     audioPath: null,
@@ -1052,6 +1055,7 @@ async function summarizeRawMessage(
       mine: isMineFrom(r.from),
       createdTime: Number(r.createdTime ?? 0),
       contentType,
+      ...locationPayload(r, contentType),
       imagePath: null,
       imageUrl: meta.PREVIEW_URL || meta.DOWNLOAD_URL || null,
       audioPath: null,
@@ -1828,6 +1832,13 @@ async function handle(req: Json) {
         ok(id, { path });
         break;
       }
+      case "send_location":
+        await commands.sendLocation(
+          id,
+          String(params.chatMid ?? ""),
+          params.location,
+        );
+        break;
       case "send_message":
         await commands.sendMessage(
           id,

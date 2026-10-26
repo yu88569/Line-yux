@@ -1,3 +1,9 @@
+import type { Location } from "@evex/linejs-types";
+import {
+  LOCATION_METADATA_VERSION,
+  needsLocationMetadataRefresh,
+  parseLocation,
+} from "./locations.ts";
 import { parseReply } from "./replies.ts";
 import { needsAlbumMetadataRefresh } from "./albums.ts";
 import {
@@ -508,7 +514,8 @@ export function createCommandService(runtime: CommandRuntime) {
       if (
         !force && cached && Date.now() - cached.at < cachePolicy().memMsg &&
         !needsFileMetadataRefresh(cached.messages) &&
-        !needsAlbumMetadataRefresh(cached.messages)
+        !needsAlbumMetadataRefresh(cached.messages) &&
+        !needsLocationMetadataRefresh(cached.messages)
       ) {
         const ui = await forUiMessages(cached.messages);
         ok(id, { messages: ui, cached: true });
@@ -756,7 +763,53 @@ export function createCommandService(runtime: CommandRuntime) {
     ok(id, { message });
   }
 
+  async function sendLocation(
+    id: number | string | null,
+    chatMid: string,
+    value: unknown,
+  ) {
+    const location = parseLocation(value);
+    if (!location) {
+      fail(id, "invalid_location");
+      return;
+    }
+    if (!/^[ucr][0-9a-f]{32}$/.test(chatMid)) {
+      fail(id, "invalid_chat");
+      return;
+    }
+    const client = runtime.getClient();
+    if (!client) {
+      fail(id, "not_logged_in");
+      return;
+    }
+    try {
+      const sent = await client.base.talk.sendMessage({
+        to: chatMid,
+        contentType: "LOCATION",
+        // Thrift omits absent optional fields despite the generated required properties.
+        location: location as Location,
+      });
+      const message = {
+        ...sentMessagePayload(
+          sent,
+          chatMid,
+          location.title || location.address || "[Location]",
+        ),
+        contentType: "LOCATION",
+        location,
+        locationMetadataVersion: LOCATION_METADATA_VERSION,
+      };
+      msgCache.delete(chatMid);
+      runtime.setChatCache(null);
+      touchChatPreviewFromMessage(message);
+      ok(id, { message });
+    } catch (e) {
+      fail(id, e instanceof Error ? e.message : String(e));
+    }
+  }
+
   return {
+    sendLocation,
     markRead: doMarkRead,
     loginQr: doLoginQr,
     loginPassword: doLoginPassword,

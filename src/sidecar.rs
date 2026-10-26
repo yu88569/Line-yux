@@ -284,6 +284,18 @@ impl Sidecar {
         )
     }
 
+    pub fn send_location(
+        &self,
+        chat_mid: &str,
+        location: &crate::protocol::LocationInfo,
+    ) -> Result<u64> {
+        anyhow::ensure!(location.is_valid(), "invalid_location");
+        self.request(
+            "send_location",
+            Some(serde_json::json!({"chatMid":chat_mid,"location":location})),
+        )
+    }
+
     pub fn send_message(&self, chat_mid: &str, text: &str) -> Result<u64> {
         self.request(
             "send_message",

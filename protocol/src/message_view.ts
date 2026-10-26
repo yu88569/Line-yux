@@ -1,3 +1,4 @@
+import { parseLocation } from "./locations.ts";
 import { isMediaType } from "./messages.ts";
 import { attachmentName } from "./file_metadata.ts";
 import { join } from "@std/path";
@@ -31,6 +32,10 @@ export function createMessageView(runtime: MessageViewRuntime) {
     const ct = normType(msg.contentType);
     const text = String(msg.text ?? "").trim();
     const L = previewLang();
+    if (ct === "LOCATION") {
+      const location = parseLocation(msg.location);
+      return location?.title ? `${L.location}: ${location.title}` : L.location;
+    }
     if (ct === "IMAGE") return L.photo;
     if (ct === "VIDEO") return L.video;
     if (ct === "STICKER") return L.sticker;
@@ -56,6 +61,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
         sticker: "สติกเกอร์",
         voice: "ข้อความเสียง",
         file: "ไฟล์",
+        location: "พิกัด",
         flex: "ข้อความ Flex",
         message: "ข้อความ",
         tap: "แตะเพื่อเปิด",
@@ -68,6 +74,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
         sticker: "Sticker",
         voice: "Voice message",
         file: "File",
+        location: "Location",
         flex: "Flex message",
         message: "Message",
         tap: "Tap to open",

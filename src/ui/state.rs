@@ -114,6 +114,7 @@ pub(super) struct AppState {
     pub mic_btn: gtk::Button,
     pub capture_btn: gtk::Button,
     pub attach_btn: gtk::Button,
+    pub location_btn: gtk::Button,
     pub sticker_btn: gtk::Button,
     pub sticker_popover: gtk::Popover,
     pub call_btn: gtk::Button,
@@ -193,6 +194,10 @@ pub(super) enum Pending {
         chat_mid: String,
         placeholder_id: String,
         retry: Option<(String, Option<crate::protocol::ReplyTarget>)>,
+    },
+    LocationSend {
+        chat_mid: String,
+        ui: super::locations::LocationDialog,
     },
     ListStickers,
     ShareFile {

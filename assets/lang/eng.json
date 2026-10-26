@@ -408,5 +408,15 @@
   "reply": "Reply",
   "cancel_reply": "Cancel reply",
   "reply_message": "Original message",
-  "reply_text_only": "Replies support text messages. Cancel reply to send attachments or stickers."
+  "reply_text_only": "Replies support text messages. Cancel reply to send attachments, stickers, or locations.",
+  "share_location": "Share location",
+  "location": "Location",
+  "location_unavailable": "Location coordinates are unavailable",
+  "open_google_maps": "Open Google Maps",
+  "location_coordinates": "Latitude, longitude",
+  "location_title": "Place name (optional)",
+  "location_address": "Address (optional)",
+  "location_hint": "Paste coordinates, for example 13.7563, 100.5018. The point is sent to this chat.",
+  "location_invalid": "Enter a valid latitude (-90 to 90) and longitude (-180 to 180), separated by a comma.",
+  "cancel": "Cancel"
 }

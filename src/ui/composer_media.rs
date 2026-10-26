@@ -327,6 +327,7 @@ pub(super) fn send_sticker_now(
                     flex: None,
                     album: None,
                     reply: None,
+                    location: None,
                 },
             );
             dismiss_new_marker(state);
@@ -814,6 +815,7 @@ pub(super) fn finish_voice_record(state: &AppState, send: bool) {
                     flex: None,
                     album: None,
                     reply: None,
+                    location: None,
                 },
             );
             show_upload_progress(state, 0.02, &crate::i18n::t("media_uploading"));

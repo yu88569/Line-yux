@@ -44,6 +44,7 @@ pub struct ShellWidgets {
     pub mic_btn: gtk::Button,
     pub capture_btn: gtk::Button,
     pub attach_btn: gtk::Button,
+    pub location_btn: gtk::Button,
     pub sticker_btn: gtk::Button,
     pub call_btn: gtk::Button,
     pub mute_btn: gtk::Button,
@@ -398,6 +399,11 @@ pub fn build_shell_page() -> ShellWidgets {
         .valign(gtk::Align::Center)
         .css_classes(["flat", "circular", "line-composer-icon"])
         .build();
+    let location_btn = gtk::Button::builder()
+        .icon_name("mark-location-symbolic")
+        .tooltip_text("Share location")
+        .css_classes(["flat"])
+        .build();
     let sticker_btn = gtk::Button::builder()
         .icon_name("face-smile-symbolic")
         .tooltip_text("Stickers")
@@ -422,6 +428,7 @@ pub fn build_shell_page() -> ShellWidgets {
         .css_classes(["suggested-action", "pill", "line-send-btn"])
         .build();
     composer_row.append(&attach_btn);
+    composer_row.append(&location_btn);
     composer_row.append(&sticker_btn);
     composer_row.append(&mic_btn);
     composer_row.append(&capture_btn);
@@ -607,6 +614,7 @@ pub fn build_shell_page() -> ShellWidgets {
         mic_btn,
         capture_btn,
         attach_btn,
+        location_btn,
         sticker_btn,
         call_btn,
         mute_btn,

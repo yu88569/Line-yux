@@ -72,6 +72,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         }
         ProtocolEvent::SessionFailed { error } => {
             restore_attachment_requests(state);
+            locations::fail_pending_locations(state);
             *state.session_ready.borrow_mut() = false;
             hide_upload_progress(state);
             let msg = if error.contains("relogin_android_required") {
@@ -596,6 +597,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     hide_upload_progress(state);
                     remove_pending_placeholder(state, placeholder_id);
                 }
+                if let Some(Pending::LocationSend { ui, .. }) = pending.as_ref() {
+                    ui.failed(error.as_deref().unwrap_or("request failed"));
+                }
                 let err = error.as_deref().unwrap_or("request failed");
                 if err.contains("sticker_not_owned") || err.contains("USER_NOT_STICKER_OWNER") {
                     toast(state, &crate::i18n::t("sticker_not_owned"));
@@ -664,6 +668,20 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         }
                         append_message(state, &msg, true);
                         pin_messages_to_latest(state);
+                    }
+                }
+                Some(Pending::LocationSend { chat_mid, ui }) => {
+                    if let Ok(msg) = serde_json::from_value::<MessageInfo>(
+                        result.get("message").cloned().unwrap_or_default(),
+                    ) {
+                        ui.succeeded();
+                        if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str()) {
+                            set_msg_state(state, "list", None);
+                            append_message(state, &msg, true);
+                            pin_messages_to_latest(state);
+                        }
+                    } else {
+                        ui.failed(&crate::i18n::t("location_unavailable"));
                     }
                 }
                 Some(Pending::ListStickers) => {
@@ -753,6 +771,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         ProtocolEvent::Exited(code) => {
             *state.session_ready.borrow_mut() = false;
             restore_attachment_requests(state);
+            locations::fail_pending_locations(state);
             chat_media_viewer::fail_pending_chat_media(state, &crate::i18n::t("protocol_offline"));
             if !*state.restarting.borrow() {
                 tracing::warn!(code, "protocol engine exited unexpectedly");
@@ -791,6 +810,7 @@ pub(super) fn schedule_sidecar_recovery(state: &AppState) {
 }
 
 pub(super) fn recover_sidecar(state: &AppState) {
+    locations::fail_pending_locations(state);
     restore_attachment_requests(state);
     chat_media_viewer::fail_pending_chat_media(state, &crate::i18n::t("protocol_offline"));
     match state.sidecar.recover() {

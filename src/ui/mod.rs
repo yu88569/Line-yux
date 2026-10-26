@@ -16,6 +16,7 @@ mod events;
 mod file_action_tests;
 mod file_actions;
 mod friends;
+mod locations;
 mod login;
 mod media;
 mod messages;
@@ -224,6 +225,7 @@ fn build_state(
         mic_btn: shell.mic_btn,
         capture_btn: shell.capture_btn,
         attach_btn: shell.attach_btn,
+        location_btn: shell.location_btn,
         sticker_btn: shell.sticker_btn,
         sticker_popover: shell.sticker_popover,
         call_btn: shell.call_btn,
@@ -1028,6 +1030,7 @@ fn send_current(state: &AppState) {
                     flex: None,
                     album: None,
                     reply: reply.map(Box::new),
+                    location: None,
                 },
             );
             clear_reply(state);
@@ -1087,6 +1090,9 @@ fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg:
 
 fn apply_ui_language(state: &AppState) {
     crate::i18n::set_lang(&state.repo_root, &state.config.borrow().language);
+    state
+        .location_btn
+        .set_tooltip_text(Some(&crate::i18n::t("share_location")));
     refresh_attachment_drafts(state);
     state.side_title.set_text(&crate::i18n::t("chats"));
     state
@@ -1527,6 +1533,7 @@ fn wire_actions(state: &AppState) {
                 Rc::new(move || {
                     *s2.session_ready.borrow_mut() = false;
                     invalidate_attachment_session(&s2);
+                    locations::fail_pending_locations(&s2);
                     s2.pending.borrow_mut().clear();
                     clear_reply(&s2);
                     *s2.current_chat.borrow_mut() = None;
@@ -1567,6 +1574,7 @@ fn wire_actions(state: &AppState) {
                     // Experimental call mode binds to session/device path: force re-login.
                     *s2.session_ready.borrow_mut() = false;
                     invalidate_attachment_session(&s2);
+                    locations::fail_pending_locations(&s2);
                     s2.pending.borrow_mut().clear();
                     clear_reply(&s2);
                     *s2.current_chat.borrow_mut() = None;
@@ -1653,6 +1661,12 @@ fn wire_actions(state: &AppState) {
     wire_record_wave(state);
 
     let s = state.clone();
+    state.location_btn.connect_clicked({
+        let state = state.clone();
+        move |_| {
+            locations::open_location_dialog(&state);
+        }
+    });
     state.attach_btn.connect_clicked(move |_| {
         pick_and_send_media(&s);
     });
@@ -1860,6 +1874,7 @@ fn restart_login(state: &AppState) {
     invalidate_attachment_session(state);
     *state.session_ready.borrow_mut() = false;
     *state.restarting.borrow_mut() = true;
+    locations::fail_pending_locations(state);
     state.pending.borrow_mut().clear();
     login::show_method_stage(&state.login);
     login::set_phase(&state.login, login::LoginPhase::Restarting);

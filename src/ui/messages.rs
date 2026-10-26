@@ -4,6 +4,12 @@ pub(super) fn message_list_fingerprint(messages: &[MessageInfo]) -> (usize, Stri
     let first = messages.first().map(|m| m.id.clone()).unwrap_or_default();
     let mut last = messages.last().map(|m| m.id.clone()).unwrap_or_default();
     for message in messages {
+        if let Some(location) = &message.location {
+            last.push_str(&format!(
+                "|loc:{}:{}:{}:{}:{}",
+                message.id, location.latitude, location.longitude, location.title, location.address
+            ));
+        }
         if let Some(reply) = &message.reply {
             last.push_str(&format!(
                 "|reply:{}:{}:{}:{}",
@@ -258,7 +264,9 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         .map(|p| std::path::Path::new(p).exists())
         .unwrap_or(false);
 
-    if let Some(album) = msg.album.as_ref() {
+    if msg.content_type.eq_ignore_ascii_case("LOCATION") {
+        locations::append_location_card(&bubble, msg.location.as_deref());
+    } else if let Some(album) = msg.album.as_ref() {
         albums::append_album_card(state, &bubble, album);
     } else if let Some(flex) = msg.flex.as_ref() {
         append_flex_card(state, &bubble, msg, flex);
@@ -1049,6 +1057,7 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
         flex: None,
         album: None,
         reply: None,
+        location: None,
     };
     append_voice_card(state, &bubble, &msg, true);
 }
@@ -1337,6 +1346,7 @@ pub(super) fn preview_body_ui(msg: &MessageInfo) -> String {
         "STICKER" => crate::i18n::t("preview_sticker"),
         "AUDIO" => crate::i18n::t("voice_message"),
         "FILE" => crate::i18n::t("preview_file"),
+        "LOCATION" => crate::i18n::t("location"),
         "FLEX" => {
             let t = msg.text.trim();
             if t.is_empty() {
@@ -1585,5 +1595,29 @@ mod album_refresh_tests {
             message_list_fingerprint(&[old]),
             message_list_fingerprint(&[new])
         );
+    }
+}
+
+#[cfg(test)]
+mod location_refresh_tests {
+    use super::*;
+    #[test]
+    fn refreshed_location_metadata_changes_message_list_fingerprint() {
+        let old: MessageInfo =
+            serde_json::from_value(serde_json::json!({"id":"1","contentType":"LOCATION"})).unwrap();
+        let mut new = old.clone();
+        new.location = Some(Box::new(crate::protocol::LocationInfo {
+            latitude: 0.0,
+            longitude: -120.0,
+            title: "Place".into(),
+            address: "Address".into(),
+        }));
+        assert_ne!(
+            message_list_fingerprint(&[old]),
+            message_list_fingerprint(&[new.clone()])
+        );
+        let first = message_list_fingerprint(&[new.clone()]);
+        new.id = "2".into();
+        assert_ne!(first, message_list_fingerprint(&[new]));
     }
 }
