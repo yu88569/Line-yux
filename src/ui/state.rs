@@ -190,6 +190,12 @@ pub(super) enum Pending {
     FetchMessages {
         chat_mid: String,
     },
+    RefreshReactions {
+        chat_mid: String,
+    },
+    React {
+        chat_mid: String,
+    },
     Send {
         chat_mid: String,
         placeholder_id: String,

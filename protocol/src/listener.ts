@@ -109,7 +109,13 @@ export function createListener(runtime: ListenerRuntime) {
       if (!ownsSession()) return;
       try {
         const type = String(op?.type ?? "");
-        if (type === "NOTIFIED_READ_MESSAGE") {
+        if (
+          type === "NOTIFIED_SEND_REACTION" || type === "SEND_REACTION" ||
+          type === "140" || type === "139"
+        ) {
+          runtime.invalidateMessages("");
+          emitEvent("reaction_changed");
+        } else if (type === "NOTIFIED_READ_MESSAGE") {
           emitEvent("read_receipt", {
             chatMid: String(op.param1 ?? ""),
             userMid: String(op.param2 ?? ""),

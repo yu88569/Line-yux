@@ -140,7 +140,36 @@ impl LocationInfo {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct MessageReaction {
+    #[serde(default)]
+    pub from: String,
+    #[serde(rename = "type", deserialize_with = "deserialize_reaction_type")]
+    pub kind: u8,
+}
+
+fn deserialize_reaction_type<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u8, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::Number(n) => n.as_u64().and_then(|n| u8::try_from(n).ok()).unwrap_or(0),
+        serde_json::Value::String(s) => match s.as_str() {
+            "NICE" => 2,
+            "LOVE" => 3,
+            "FUN" => 4,
+            "AMAZING" => 5,
+            "SAD" => 6,
+            "OMG" => 7,
+            _ => 0,
+        },
+        _ => 0,
+    })
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct MessageInfo {
+    #[serde(default)]
+    pub reactions: Vec<MessageReaction>,
     #[serde(default)]
     pub location: Option<Box<LocationInfo>>,
     #[serde(default)]
@@ -210,6 +239,7 @@ pub enum ProtocolEvent {
         pin: String,
     },
     Listening,
+    ReactionChanged,
     Message(Box<MessageInfo>),
     Chats {
         chats: Vec<ChatInfo>,

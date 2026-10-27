@@ -64,6 +64,50 @@ pub(super) fn attach_reply_menu(state: &AppState, bubble: &gtk::Box, msg: &Messa
     action.add_css_class("flat");
     let actions = gtk::Box::new(gtk::Orientation::Vertical, 2);
     actions.append(&action);
+    let reaction_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    for (kind, icon) in [
+        (2, "👍"),
+        (3, "❤️"),
+        (4, "😆"),
+        (5, "😮"),
+        (6, "😢"),
+        (7, "😲"),
+    ] {
+        let selected = msg
+            .reactions
+            .iter()
+            .any(|r| r.kind == kind && state.self_mid.borrow().as_deref() == Some(r.from.as_str()));
+        let button = gtk::Button::with_label(icon);
+        button.add_css_class("flat");
+        if selected {
+            button.add_css_class("suggested-action");
+        }
+        let s = state.clone();
+        let id = msg.id.clone();
+        let chat_mid = target.chat_mid.clone();
+        let weak_menu = menu.downgrade();
+        button.connect_clicked(move |_| {
+            if let Some(menu) = weak_menu.upgrade() {
+                menu.popdown();
+            }
+            match s
+                .sidecar
+                .react_message(&chat_mid, &id, if selected { 1 } else { kind })
+            {
+                Ok(request) => {
+                    s.pending.borrow_mut().insert(
+                        request,
+                        Pending::React {
+                            chat_mid: chat_mid.clone(),
+                        },
+                    );
+                }
+                Err(e) => toast(&s, &e.to_string()),
+            }
+        });
+        reaction_row.append(&button);
+    }
+    actions.append(&reaction_row);
     if !msg.text.is_empty() {
         let copy = gtk::Button::with_label(&crate::i18n::t("qr_copy"));
         copy.add_css_class("flat");

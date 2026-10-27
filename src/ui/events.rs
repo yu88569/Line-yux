@@ -244,6 +244,16 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             }
             upsert_chat_row(state, chat);
         }
+        ProtocolEvent::ReactionChanged => {
+            if let Some(chat_mid) = state.current_chat.borrow().clone()
+                && let Ok(id) = state.sidecar.refresh_messages(&chat_mid, 40)
+            {
+                state
+                    .pending
+                    .borrow_mut()
+                    .insert(id, Pending::RefreshReactions { chat_mid });
+            }
+        }
         ProtocolEvent::ReadReceipt {
             chat_mid,
             message_id,
@@ -501,6 +511,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 return;
             }
             if !ok {
+                if matches!(pending, Some(Pending::RefreshReactions { .. })) {
+                    return;
+                }
                 match pending.as_ref() {
                     Some(Pending::AlbumPage(ui)) => {
                         albums::page_failed(
@@ -649,6 +662,28 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         .unwrap_or_default();
                     if !same_message_list(state, &chat_mid, &messages) {
                         apply_messages(state, messages);
+                    }
+                }
+                Some(Pending::RefreshReactions { chat_mid }) => {
+                    if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str()) {
+                        let messages: Vec<MessageInfo> = result
+                            .get("messages")
+                            .cloned()
+                            .and_then(|v| serde_json::from_value(v).ok())
+                            .unwrap_or_default();
+                        if !same_message_list(state, &chat_mid, &messages) {
+                            apply_messages_preserving_scroll(state, messages);
+                        }
+                    }
+                }
+                Some(Pending::React { chat_mid }) => {
+                    if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str()) {
+                        if let Ok(id) = state.sidecar.refresh_messages(&chat_mid, 40) {
+                            state
+                                .pending
+                                .borrow_mut()
+                                .insert(id, Pending::RefreshReactions { chat_mid });
+                        }
                     }
                 }
                 Some(Pending::Send {

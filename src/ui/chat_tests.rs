@@ -948,6 +948,24 @@ fn gtk_message_reply_right_click_and_lifecycle() {
     );
     actions
         .iter()
+        .find(|b| b.label().as_deref() == Some("❤️"))
+        .unwrap()
+        .emit_clicked();
+    wait_for(|| {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("react_message")
+    });
+    let reaction_request: serde_json::Value = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|r| r["method"] == "react_message")
+        .unwrap();
+    assert_eq!(reaction_request["params"]["messageId"], original.id);
+    assert_eq!(reaction_request["params"]["reaction"], 3);
+    actions
+        .iter()
         .find(|b| b.label().as_deref() == Some(&crate::i18n::t("reply")))
         .unwrap()
         .emit_clicked();
@@ -1208,4 +1226,62 @@ fn gtk_location_receive_send_and_failure() {
     state.discord.shutdown();
     drain();
     std::fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+#[ignore = "requires GTK and an X11 display"]
+fn gtk_reaction_refresh_preserves_scroll_position() {
+    let (_temp, _, _app, state) =
+        chat_fixture("reaction-scroll", "dev.linegtk.ReactionScrollFixture");
+    *state.current_chat.borrow_mut() = Some("u-peer".into());
+    state.stack.set_visible_child_name("shell");
+    state.msg_stack.set_visible_child_name("list");
+    state.window.present();
+    let messages: Vec<MessageInfo> = (0..60).map(|i| serde_json::from_value(serde_json::json!({
+        "id": (i+1).to_string(), "from":"u-peer", "to":"u-self", "text":format!("Message {i}"), "createdTime":i+1
+    })).unwrap()).collect();
+    apply_messages(&state, messages.clone());
+    wait_for(|| {
+        state.message_scroll.vadjustment().upper()
+            > state.message_scroll.vadjustment().page_size() + 400.0
+    });
+    let adj = state.message_scroll.vadjustment();
+    *state.scroll_pinning.borrow_mut() = true;
+    adj.set_value(150.0);
+    *state.scroll_pinning.borrow_mut() = false;
+    *state.stick_bottom.borrow_mut() = false;
+    let before = adj.value();
+    let mut refreshed = messages;
+    refreshed[0].reactions =
+        serde_json::from_value(serde_json::json!([{"from":"u-peer", "type":3}])).unwrap();
+    state.pending.borrow_mut().insert(
+        999,
+        Pending::RefreshReactions {
+            chat_mid: "u-peer".into(),
+        },
+    );
+    handle_event(
+        &state,
+        ProtocolEvent::Response {
+            id: 999,
+            ok: false,
+            result: serde_json::Value::Null,
+            error: Some("offline".into()),
+        },
+    );
+    assert_eq!(
+        state.msg_stack.visible_child_name().as_deref(),
+        Some("list")
+    );
+    apply_messages_preserving_scroll(&state, refreshed);
+    wait_for(|| !*state.scroll_pinning.borrow());
+    assert!(
+        (adj.value() - before).abs() < 2.0,
+        "expected {before}, got {}",
+        adj.value()
+    );
+    assert!(!*state.stick_bottom.borrow());
+    state.window.close();
+    clear_messages(&state);
+    drain();
 }

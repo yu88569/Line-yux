@@ -311,6 +311,7 @@ pub(super) fn send_sticker_now(
                 id,
                 &chat_mid,
                 MessageInfo {
+                    reactions: Vec::new(),
                     id: String::new(),
                     text: "[Sticker]".into(),
                     from: String::new(),
@@ -799,6 +800,7 @@ pub(super) fn finish_voice_record(state: &AppState, send: bool) {
                 id,
                 &chat_mid,
                 MessageInfo {
+                    reactions: Vec::new(),
                     id: String::new(),
                     text: "Voice message".into(),
                     from: String::new(),

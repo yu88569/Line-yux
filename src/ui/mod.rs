@@ -1014,6 +1014,7 @@ fn send_current(state: &AppState) {
                 id,
                 &chat_mid,
                 MessageInfo {
+                    reactions: Vec::new(),
                     id: String::new(),
                     text,
                     from: String::new(),

@@ -222,6 +222,7 @@ pub(super) fn confirm_attachments(state: &AppState, chat: &str) {
                     request,
                     chat,
                     MessageInfo {
+                        reactions: Vec::new(),
                         id: String::new(),
                         text: text.into(),
                         from: String::new(),

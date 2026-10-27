@@ -296,6 +296,20 @@ impl Sidecar {
         )
     }
 
+    pub fn react_message(&self, chat_mid: &str, message_id: &str, reaction: u8) -> Result<u64> {
+        self.request(
+            "react_message",
+            Some(json!({"chatMid": chat_mid, "messageId": message_id, "reaction": reaction})),
+        )
+    }
+
+    pub fn refresh_messages(&self, chat_mid: &str, limit: u32) -> Result<u64> {
+        self.request(
+            "fetch_messages",
+            Some(json!({"chatMid": chat_mid, "limit": limit, "force": true, "background": true})),
+        )
+    }
+
     pub fn send_message(&self, chat_mid: &str, text: &str) -> Result<u64> {
         self.request(
             "send_message",
@@ -628,6 +642,7 @@ fn read_loop<R: std::io::Read>(
                                 .unwrap_or(false);
                             ProtocolEvent::Chats { chats, cached }
                         }
+                        "reaction_changed" => ProtocolEvent::ReactionChanged,
                         "messages" => {
                             let chat_mid = resp
                                 .extra

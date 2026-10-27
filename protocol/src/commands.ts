@@ -491,11 +491,37 @@ export function createCommandService(runtime: CommandRuntime) {
     });
   }
 
+  const forcedRefreshes = new Map<string, Promise<void>>();
   async function doFetchMessages(
     id: number | string | null,
     chatMid: string,
     limit = 50,
     force = false,
+    background = false,
+  ) {
+    if (!force) {
+      return await fetchMessagesInner(id, chatMid, limit, false, background);
+    }
+    const previous = forcedRefreshes.get(chatMid) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(() =>
+      fetchMessagesInner(id, chatMid, limit, true, background)
+    );
+    forcedRefreshes.set(chatMid, current);
+    try {
+      await current;
+    } finally {
+      if (forcedRefreshes.get(chatMid) === current) {
+        forcedRefreshes.delete(chatMid);
+      }
+    }
+  }
+
+  async function fetchMessagesInner(
+    id: number | string | null,
+    chatMid: string,
+    limit = 50,
+    force = false,
+    background = false,
   ) {
     const client = runtime.getClient();
     if (!client) {
@@ -508,168 +534,189 @@ export function createCommandService(runtime: CommandRuntime) {
     }
 
     await refreshCachePolicy();
-    await dedupe(`msgs:${chatMid}:${limit}:${force}`, async () => {
-      bumpMediaEpoch(chatMid); // cancel any prior hydrate for this chat
-      const cached = msgCache.get(chatMid);
-      if (
-        !force && cached && Date.now() - cached.at < cachePolicy().memMsg &&
-        !needsFileMetadataRefresh(cached.messages) &&
-        !needsAlbumMetadataRefresh(cached.messages) &&
-        !needsLocationMetadataRefresh(cached.messages)
-      ) {
-        const ui = await forUiMessages(cached.messages);
-        ok(id, { messages: ui, cached: true });
-        hydrateMedia(cached.messages, chatMid);
-        return;
-      }
+    const progress = (payload: Json) => {
+      if (!background) emitEvent("progress", payload);
+    };
+    const result = await dedupe(
+      `msgs:${chatMid}:${limit}:${force}${force ? `:${id}` : ""}`,
+      async () => {
+        bumpMediaEpoch(chatMid); // cancel any prior hydrate for this chat
+        const cached = msgCache.get(chatMid);
+        if (
+          !force && cached && Date.now() - cached.at < cachePolicy().memMsg &&
+          !needsFileMetadataRefresh(cached.messages) &&
+          !needsAlbumMetadataRefresh(cached.messages) &&
+          !needsLocationMetadataRefresh(cached.messages) &&
+          cached.messages.every((message) => Array.isArray(message.reactions))
+        ) {
+          const ui = await forUiMessages(cached.messages);
+          hydrateMedia(cached.messages, chatMid);
+          return { messages: ui, cached: true };
+        }
 
-      // Warm from disk immediately
-      if (!force) {
-        const disk = await loadDiskMessages(chatMid);
-        if (disk?.length) {
-          msgCache.set(chatMid, { at: Date.now(), messages: disk });
+        // Warm from disk immediately
+        if (!force) {
+          const disk = await loadDiskMessages(chatMid);
+          if (disk?.length) {
+            msgCache.set(chatMid, { at: Date.now(), messages: disk });
+            emitEvent("messages", {
+              chatMid,
+              messages: await forUiMessages(disk),
+              cached: true,
+            });
+            progress({
+              scope: "messages",
+              chatMid,
+              state: "ready",
+            });
+            hydrateMedia(disk, chatMid);
+            // still refresh below unless memory-fresh
+          }
+        }
+
+        if (!force && cached?.messages?.length) {
           emitEvent("messages", {
             chatMid,
-            messages: await forUiMessages(disk),
+            messages: await forUiMessages(cached.messages),
             cached: true,
           });
-          emitEvent("progress", {
+          progress({
             scope: "messages",
             chatMid,
             state: "ready",
           });
-          hydrateMedia(disk, chatMid);
-          // still refresh below unless memory-fresh
         }
-      }
 
-      if (!force && cached?.messages?.length) {
-        emitEvent("messages", {
-          chatMid,
-          messages: await forUiMessages(cached.messages),
-          cached: true,
-        });
-        emitEvent("progress", {
-          scope: "messages",
-          chatMid,
-          state: "ready",
-        });
-      }
+        progress({ scope: "messages", chatMid, state: "loading" });
 
-      emitEvent("progress", { scope: "messages", chatMid, state: "loading" });
-
-      try {
-        let out: Json[] = [];
-
-        // Prefer message boxes for DMs/bots (fast + works). Groups try Chat helper first.
-        let usedBoxes = false;
         try {
-          if (chatMid.startsWith("c")) {
-            const chat = await client!.getChat(chatMid);
-            const messages = await chat.fetchMessages(limit);
-            for (const m of messages) {
-              out.push(await summarizeTalkMessage(m, { withMedia: false }));
+          let out: Json[] = [];
+
+          // Prefer message boxes for DMs/bots (fast + works). Groups try Chat helper first.
+          let usedBoxes = false;
+          try {
+            if (chatMid.startsWith("c")) {
+              const chat = await client!.getChat(chatMid);
+              const messages = await chat.fetchMessages(limit);
+              for (const m of messages) {
+                out.push(await summarizeTalkMessage(m, { withMedia: false }));
+              }
+            } else {
+              usedBoxes = true;
             }
-          } else {
+          } catch {
             usedBoxes = true;
           }
-        } catch {
-          usedBoxes = true;
-        }
 
-        if (usedBoxes || !out.length) {
-          let cursor = boxCursor.get(chatMid);
-          if (!cursor) {
-            const boxes = await client!.base.talk.getMessageBoxes({
-              messageBoxListRequest: {},
-            });
-            for (const box of boxes.messageBoxes ?? []) {
-              const mid = String(box.id ?? "");
-              storeBoxCursor(mid, box.lastDeliveredMessageId);
-            }
-            cursor = boxCursor.get(chatMid);
-          }
-          if (!cursor) {
-            msgCache.set(chatMid, { at: Date.now(), messages: [] });
-            ok(id, { messages: [] });
-            emitEvent("progress", {
-              scope: "messages",
-              chatMid,
-              state: "empty",
-            });
-            return;
-          }
-          const messages = await client!.base.talk
-            .getPreviousMessagesV2WithRequest({
-              request: {
-                messageBoxId: chatMid,
-                endMessageId: {
-                  messageId: cursor.messageId,
-                  deliveredTime: cursor.deliveredTime,
-                },
-                messagesCount: limit,
-              },
-            });
-          out = [];
-          for (const raw of messages) {
-            try {
-              const meta = (raw as { contentMetadata?: Record<string, string> })
-                .contentMetadata;
-              if (meta?.BOT_CHECK || meta?.BOT_ORIGIN) {
-                const from = String((raw as { from?: string }).from ?? chatMid);
-                const cur = contactIndex.get(from);
-                if (cur) cur.kind = "bot";
-                else {
-                  contactIndex.set(from, {
-                    name: contactIndex.get(from)?.name || from,
-                    picturePath: null,
-                    kind: "bot",
-                    muted: false,
-                  });
-                }
+          if (usedBoxes || !out.length) {
+            let cursor = boxCursor.get(chatMid);
+            if (!cursor) {
+              const boxes = await client!.base.talk.getMessageBoxes({
+                messageBoxListRequest: {},
+              });
+              for (const box of boxes.messageBoxes ?? []) {
+                const mid = String(box.id ?? "");
+                storeBoxCursor(mid, box.lastDeliveredMessageId);
               }
-              out.push(await summarizeRawMessage(raw, { withMedia: false }));
-            } catch (e) {
-              console.error("[fetch msg skip]", e);
+              cursor = boxCursor.get(chatMid);
+            }
+            if (!cursor) {
+              msgCache.set(chatMid, { at: Date.now(), messages: [] });
+              progress({
+                scope: "messages",
+                chatMid,
+                state: "empty",
+              });
+              return { messages: [], cached: false };
+            }
+            const messages = await client!.base.talk
+              .getPreviousMessagesV2WithRequest({
+                request: {
+                  messageBoxId: chatMid,
+                  endMessageId: {
+                    messageId: cursor.messageId,
+                    deliveredTime: cursor.deliveredTime,
+                  },
+                  messagesCount: limit,
+                },
+              });
+            out = [];
+            for (const raw of messages) {
+              try {
+                const meta =
+                  (raw as { contentMetadata?: Record<string, string> })
+                    .contentMetadata;
+                if (meta?.BOT_CHECK || meta?.BOT_ORIGIN) {
+                  const from = String(
+                    (raw as { from?: string }).from ?? chatMid,
+                  );
+                  const cur = contactIndex.get(from);
+                  if (cur) cur.kind = "bot";
+                  else {
+                    contactIndex.set(from, {
+                      name: contactIndex.get(from)?.name || from,
+                      picturePath: null,
+                      kind: "bot",
+                      muted: false,
+                    });
+                  }
+                }
+                out.push(await summarizeRawMessage(raw, { withMedia: false }));
+              } catch (e) {
+                console.error("[fetch msg skip]", e);
+              }
             }
           }
-        }
 
-        const previous = new Map(
-          (msgCache.get(chatMid)?.messages ?? []).map((m) => [String(m.id), m]),
-        );
-        for (const message of out) {
-          if (message.contentType !== "FILE") continue;
-          const downloaded = previous.get(String(message.id));
-          if (typeof downloaded?.filePath !== "string") continue;
-          message.filePath = downloaded.filePath;
-          message.fileSize = attachmentSize(downloaded.fileSize) ??
-            message.fileSize;
-          message.fileName = attachmentName(message.fileName) ||
-            attachmentName(downloaded.fileName);
-          message.text = message.fileName || "[File]";
-        }
-        out.sort((a, b) => Number(a.createdTime) - Number(b.createdTime));
-        msgCache.set(chatMid, { at: Date.now(), messages: out });
-        await saveDiskMessages(chatMid, out);
-        ok(id, { messages: await forUiMessages(out), cached: false });
-        emitEvent("progress", {
-          scope: "messages",
-          chatMid,
-          state: out.length ? "ready" : "empty",
-        });
+          const previous = new Map(
+            (msgCache.get(chatMid)?.messages ?? []).map((
+              m,
+            ) => [String(m.id), m]),
+          );
+          for (const message of out) {
+            if (message.contentType !== "FILE") continue;
+            const downloaded = previous.get(String(message.id));
+            if (typeof downloaded?.filePath !== "string") continue;
+            message.filePath = downloaded.filePath;
+            message.fileSize = attachmentSize(downloaded.fileSize) ??
+              message.fileSize;
+            message.fileName = attachmentName(message.fileName) ||
+              attachmentName(downloaded.fileName);
+            message.text = message.fileName || "[File]";
+          }
+          out.sort((a, b) => Number(a.createdTime) - Number(b.createdTime));
+          msgCache.set(chatMid, { at: Date.now(), messages: out });
+          await saveDiskMessages(chatMid, out);
+          const messages = await forUiMessages(out);
+          progress({
+            scope: "messages",
+            chatMid,
+            state: out.length ? "ready" : "empty",
+          });
 
-        hydrateMedia(out, chatMid);
-      } catch (e) {
-        fail(id, e instanceof Error ? e.message : String(e));
-        emitEvent("progress", {
-          scope: "messages",
-          chatMid,
-          state: "error",
-          error: String(e),
-        });
-      }
-    });
+          hydrateMedia(out, chatMid);
+          return { messages, cached: false };
+        } catch (e) {
+          progress({
+            scope: "messages",
+            chatMid,
+            state: "error",
+            error: String(e),
+          });
+          throw e;
+        }
+      },
+    ).then((result) => ({ result }), (error: unknown) => ({ error }));
+    if ("error" in result) {
+      fail(
+        id,
+        result.error instanceof Error
+          ? result.error.message
+          : String(result.error),
+      );
+    } else {
+      ok(id, result.result);
+    }
   }
 
   async function doSend(

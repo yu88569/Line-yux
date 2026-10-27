@@ -4,6 +4,12 @@ pub(super) fn message_list_fingerprint(messages: &[MessageInfo]) -> (usize, Stri
     let first = messages.first().map(|m| m.id.clone()).unwrap_or_default();
     let mut last = messages.last().map(|m| m.id.clone()).unwrap_or_default();
     for message in messages {
+        for reaction in &message.reactions {
+            last.push_str(&format!(
+                "|reaction:{}:{}:{}",
+                message.id, reaction.from, reaction.kind
+            ));
+        }
         if let Some(location) = &message.location {
             last.push_str(&format!(
                 "|loc:{}:{}:{}:{}:{}",
@@ -38,10 +44,27 @@ pub(super) fn same_message_list(
     )
 }
 
-pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
+pub(super) fn apply_messages(state: &AppState, messages: Vec<MessageInfo>) {
+    apply_messages_inner(state, messages, false);
+}
+
+pub(super) fn apply_messages_preserving_scroll(state: &AppState, messages: Vec<MessageInfo>) {
+    apply_messages_inner(state, messages, true);
+}
+
+fn apply_messages_inner(state: &AppState, mut messages: Vec<MessageInfo>, preserve_scroll: bool) {
+    let saved_position = if preserve_scroll && !*state.stick_bottom.borrow() {
+        Some(state.message_scroll.vadjustment().value())
+    } else {
+        None
+    };
+    if saved_position.is_some() {
+        *state.scroll_pin_gen.borrow_mut() += 1;
+        *state.scroll_pinning.borrow_mut() = true;
+    }
     clear_messages(state);
     state.media_queue.borrow_mut().clear();
-    *state.stick_bottom.borrow_mut() = true;
+    *state.stick_bottom.borrow_mut() = saved_position.is_none();
     messages.sort_by_key(|m| m.created_time);
     let fingerprint = message_list_fingerprint(&messages);
     let originals: HashMap<_, _> = messages
@@ -82,6 +105,7 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
         *state.msg_list_fp.borrow_mut() = None;
     }
     if messages.is_empty() {
+        *state.scroll_pinning.borrow_mut() = false;
         set_msg_state(state, "empty", Some(&crate::i18n::t("no_messages")));
         state.chat_subtitle.set_text(&crate::i18n::t("empty"));
         return;
@@ -111,7 +135,19 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
         let mut left = batch.borrow_mut();
         let take = left.len().min(14);
         if take == 0 {
-            pin_messages_to_latest(&state_c);
+            if let Some(position) = saved_position {
+                let restore = state_c.clone();
+                let expected_chat = chat_mid.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(100), move || {
+                    if *restore.current_chat.borrow() == expected_chat {
+                        restore.message_scroll.vadjustment().set_value(position);
+                        *restore.stick_bottom.borrow_mut() = false;
+                    }
+                    *restore.scroll_pinning.borrow_mut() = false;
+                });
+            } else {
+                pin_messages_to_latest(&state_c);
+            }
             if let Some(mid) = chat_mid.as_deref() {
                 mark_chat_read(&state_c, mid);
                 clear_unread_badge(&state_c, mid);
@@ -371,6 +407,37 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             .msg_created
             .borrow_mut()
             .insert(msg.id.clone(), msg.created_time);
+    }
+
+    if !msg.reactions.is_empty() {
+        let mut counts = [0usize; 8];
+        for reaction in &msg.reactions {
+            if let Some(count) = counts.get_mut(reaction.kind as usize) {
+                *count += 1;
+            }
+        }
+        let summary = [
+            (2, "👍"),
+            (3, "❤️"),
+            (4, "😆"),
+            (5, "😮"),
+            (6, "😢"),
+            (7, "😲"),
+        ]
+        .into_iter()
+        .filter(|(kind, _)| counts[*kind] > 0)
+        .map(|(kind, icon)| format!("{} {}", icon, counts[kind]))
+        .collect::<Vec<_>>()
+        .join("  ");
+        if !summary.is_empty() {
+            bubble.append(
+                &gtk::Label::builder()
+                    .label(summary)
+                    .xalign(0.0)
+                    .css_classes(["dim-label"])
+                    .build(),
+            );
+        }
     }
 
     let time_txt = format_msg_time(msg.created_time);
@@ -1041,6 +1108,7 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
     }
     let duration_ms = ffprobe_duration_ms(std::path::Path::new(path)).map(|v| v as i64);
     let msg = MessageInfo {
+        reactions: Vec::new(),
         id: message_id.to_string(),
         text: "Voice message".into(),
         from: String::new(),
@@ -1619,5 +1687,23 @@ mod location_refresh_tests {
         let first = message_list_fingerprint(&[new.clone()]);
         new.id = "2".into();
         assert_ne!(first, message_list_fingerprint(&[new]));
+    }
+}
+
+#[cfg(test)]
+mod reaction_tests {
+    use super::*;
+    #[test]
+    fn reaction_changes_refresh_the_message_list() {
+        let old: MessageInfo = serde_json::from_value(serde_json::json!({"id":"42"})).unwrap();
+        let new: MessageInfo = serde_json::from_value(
+            serde_json::json!({"id":"42", "reactions":[{"from":"u1", "type":"LOVE"}]}),
+        )
+        .unwrap();
+        assert_eq!(new.reactions[0].kind, 3);
+        assert_ne!(
+            message_list_fingerprint(&[old]),
+            message_list_fingerprint(&[new])
+        );
     }
 }

@@ -1,3 +1,4 @@
+import { reactMessage, summarizeReactions } from "./reactions.ts";
 import { locationPayload } from "./locations.ts";
 import { patchMessageDecryption } from "./message_decryption.ts";
 import { incomingReply } from "./replies.ts";
@@ -337,7 +338,10 @@ const listener = createListener({
   setListening: (next) => {
     listening = next;
   },
-  invalidateMessages: (chatMid) => msgCache.delete(chatMid),
+  invalidateMessages: (chatMid) => {
+    if (chatMid) msgCache.delete(chatMid);
+    else msgCache.clear();
+  },
   summarizeTalkMessage,
   storeBoxCursor,
   upsertChatFromMessage,
@@ -785,7 +789,14 @@ async function summarizeTalkMessage(
     chunks?: unknown[];
     relatedMessageId?: string;
     messageRelationType?: string | number;
+    reactions?: Array<
+      {
+        fromUserMid?: string;
+        reactionType?: { predefinedReactionType?: string | number };
+      }
+    >;
   };
+  const reactions = summarizeReactions(raw.reactions);
   const contentType = normType(raw.contentType);
   const meta = raw.contentMetadata ?? {};
   let text = tm.text || meta.ALT_TEXT || meta.STKTXT || "";
@@ -849,6 +860,7 @@ async function summarizeTalkMessage(
         messageChatMid({ ...raw, mine: isMineFrom(raw.from) }),
       ),
       id,
+      reactions,
       text: duration
         ? `Voice message (${Math.round(Number(duration) / 1000)}s)`
         : text,
@@ -977,6 +989,7 @@ async function summarizeTalkMessage(
       messageChatMid({ ...raw, mine: isMineFrom(raw.from) }),
     ),
     id,
+    reactions,
     text,
     from: raw.from ?? "",
     to: raw.to ?? "",
@@ -1036,6 +1049,7 @@ async function summarizeRawMessage(
         messageChatMid({ ...r, mine: isMineFrom(r.from) }),
       ),
       id: String(r.id ?? ""),
+      reactions: summarizeReactions(r.reactions),
       text,
       from: String(r.from ?? ""),
       to: String(r.to ?? ""),
@@ -1759,6 +1773,7 @@ async function handle(req: Json) {
           String(params.chatMid ?? ""),
           Number(params.limit ?? 50),
           !!params.force,
+          !!params.background,
         );
         break;
       case "list_album_photos": {
@@ -1826,6 +1841,16 @@ async function handle(req: Json) {
           params.location,
         );
         break;
+      case "react_message": {
+        if (!client) throw new Error("not_logged_in");
+        await reactMessage(
+          client,
+          String(params.messageId ?? ""),
+          params.reaction,
+        );
+        ok(id, {});
+        break;
+      }
       case "send_message":
         await commands.sendMessage(
           id,
