@@ -284,6 +284,17 @@ impl Sidecar {
         )
     }
 
+    pub fn fetch_older_messages(
+        &self,
+        chat_mid: &str,
+        before: &crate::protocol::HistoryCursor,
+    ) -> Result<u64> {
+        self.request(
+            "fetch_older_messages",
+            Some(json!({"chatMid":chat_mid,"before":before})),
+        )
+    }
+
     pub fn send_location(
         &self,
         chat_mid: &str,

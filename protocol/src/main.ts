@@ -1,3 +1,4 @@
+import { historyCursor } from "./history.ts";
 import { FLEX_METADATA_VERSION } from "./message_view.ts";
 import { reactMessage, summarizeReactions } from "./reactions.ts";
 import { locationPayload } from "./locations.ts";
@@ -869,6 +870,7 @@ async function summarizeTalkMessage(
       to: raw.to ?? "",
       mine: isMineFrom(raw.from),
       createdTime: Number(raw.createdTime ?? 0),
+      historyCursor: historyCursor(raw),
       contentType,
       imagePath: null,
       imageUrl: null,
@@ -996,6 +998,7 @@ async function summarizeTalkMessage(
     to: raw.to ?? "",
     mine: isMineFrom(raw.from),
     createdTime: Number(raw.createdTime ?? 0),
+    historyCursor: historyCursor(raw),
     contentType,
     ...locationPayload(raw, contentType),
     imagePath,
@@ -1057,6 +1060,7 @@ async function summarizeRawMessage(
       to: String(r.to ?? ""),
       mine: isMineFrom(r.from),
       createdTime: Number(r.createdTime ?? 0),
+      historyCursor: historyCursor(r),
       contentType,
       ...locationPayload(r, contentType),
       imagePath: null,
@@ -1772,6 +1776,13 @@ async function handle(req: Json) {
       case "list_chats":
         await commands.listChats(id, !!params.force);
         break;
+      case "fetch_older_messages":
+        await commands.fetchOlderMessages(
+          id,
+          String(params.chatMid ?? ""),
+          params.before,
+        );
+        break;
       case "fetch_messages":
         await commands.fetchMessages(
           id,
@@ -1981,6 +1992,9 @@ async function handle(req: Json) {
       }
       case "clear_cache": {
         const kind = String(params.kind ?? "all");
+        if (kind === "messages" || kind === "all") {
+          await commands.clearHistory();
+        }
         const wipe = async (dir: string) => {
           try {
             for await (const e of Deno.readDir(dir)) {
@@ -2007,7 +2021,9 @@ async function handle(req: Json) {
           contactIndex.clear();
           contactsAt = 0;
         }
-        if (kind === "messages" || kind === "all") msgCache.clear();
+        if (kind === "messages" || kind === "all") {
+          msgCache.clear();
+        }
         ok(id, { cleared: kind });
         break;
       }
@@ -2120,6 +2136,7 @@ async function handle(req: Json) {
         listening = false;
         chatCache = null;
         msgCache.clear();
+        await commands.clearHistory();
         ok(id, {});
         break;
       default:

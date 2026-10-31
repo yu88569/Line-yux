@@ -17,6 +17,7 @@ mod file_action_tests;
 mod file_actions;
 mod flex;
 mod friends;
+mod history;
 mod locations;
 mod login;
 mod media;
@@ -179,6 +180,7 @@ fn build_state(
         attachment_requests: Rc::new(RefCell::new(HashMap::new())),
         next_attachment_id: Rc::new(RefCell::new(0)),
         attachment_epoch: Rc::new(RefCell::new(0)),
+        history: Default::default(),
         current_chat: Rc::new(RefCell::new(None)),
         chats: Rc::new(RefCell::new(Vec::new())),
         chat_avatars: Rc::new(RefCell::new(HashMap::new())),
@@ -911,10 +913,12 @@ fn apply_ui_motion(state: &AppState) {
 
 fn wire_scroll_pin(state: &AppState) {
     // Content height changed: if we are stuck, stay on the real bottom.
+    let anchored = state.clone();
     let stick = state.stick_bottom.clone();
     let pinning = state.scroll_pinning.clone();
     let adj = state.message_scroll.vadjustment();
     adj.connect_changed(move |adj| {
+        history::restore_anchor(&anchored);
         if !*stick.borrow() {
             return;
         }
@@ -939,13 +943,10 @@ fn wire_scroll_pin(state: &AppState) {
         if *s_scroll.scroll_pinning.borrow() {
             return glib::Propagation::Proceed;
         }
-        // Negative dy = scroll up (older messages).
-        if dy < -0.1 && *s_scroll.stick_bottom.borrow() {
-            let adj = s_scroll.message_scroll.vadjustment();
-            let target = (adj.upper() - adj.page_size()).max(0.0);
-            if adj.value() + 120.0 < target {
-                *s_scroll.stick_bottom.borrow_mut() = false;
-            }
+        history::release_anchor(&s_scroll);
+        if dy < -0.1 {
+            *s_scroll.stick_bottom.borrow_mut() = false;
+            history::maybe_load(&s_scroll);
         }
         glib::Propagation::Proceed
     });
@@ -958,6 +959,7 @@ fn wire_scroll_pin(state: &AppState) {
         if *s.scroll_pinning.borrow() {
             return;
         }
+        history::release_anchor(&s);
         let target = (adj.upper() - adj.page_size()).max(0.0);
         let near_bottom = adj.value() + 120.0 >= target;
         if near_bottom {
@@ -970,7 +972,20 @@ fn wire_scroll_pin(state: &AppState) {
             // Scrollbar drag / key scroll away from bottom.
             *s.stick_bottom.borrow_mut() = false;
         }
+        history::maybe_load(&s);
     });
+    let keys = gtk::EventControllerKey::new();
+    let keyed = state.clone();
+    keys.connect_key_pressed(move |_, _, _, _| {
+        history::release_anchor(&keyed);
+        glib::Propagation::Proceed
+    });
+    state.message_scroll.add_controller(keys);
+    let click = gtk::GestureClick::new();
+    click.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let clicked = state.clone();
+    click.connect_pressed(move |_, _, _, _| history::release_anchor(&clicked));
+    state.message_scroll.add_controller(click);
 }
 
 fn send_current(state: &AppState) {
@@ -1030,6 +1045,7 @@ fn send_current(state: &AppState) {
                     file_path: None,
                     duration_ms: None,
                     flex: None,
+                    history_cursor: None,
                     album: None,
                     reply: reply.map(Box::new),
                     location: None,
@@ -1055,6 +1071,11 @@ fn now_ms() -> i64 {
 }
 
 fn remove_pending_placeholder(state: &AppState, placeholder_id: &str) {
+    state
+        .history
+        .borrow_mut()
+        .messages
+        .retain(|m| m.id != placeholder_id);
     if let Some(row) = state.pending_rows.borrow_mut().remove(placeholder_id) {
         state.message_list.remove(&row);
     }
@@ -1790,6 +1811,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
     clear_reply(state);
+    history::reset(state, &chat.mid);
     state.current_chat.borrow_mut().replace(chat.mid.clone());
     refresh_attachment_drafts(state);
     hide_upload_progress(state);
@@ -1872,6 +1894,7 @@ fn submit_email_login(state: &AppState) {
 }
 
 fn restart_login(state: &AppState) {
+    history::reset(state, "");
     clear_reply(state);
     invalidate_attachment_session(state);
     *state.session_ready.borrow_mut() = false;

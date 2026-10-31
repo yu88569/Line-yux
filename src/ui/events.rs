@@ -576,6 +576,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         Some(error.as_deref().unwrap_or("Failed to load chats")),
                     );
                 }
+                if let Some(Pending::FetchOlder { chat_mid }) = pending.as_ref() {
+                    history::failed(state, id, chat_mid);
+                }
                 if matches!(pending, Some(Pending::FetchMessages { .. })) {
                     set_msg_state(
                         state,
@@ -660,9 +663,22 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         .cloned()
                         .and_then(|v| serde_json::from_value(v).ok())
                         .unwrap_or_default();
-                    if !same_message_list(state, &chat_mid, &messages) {
-                        apply_messages(state, messages);
+                    for message in &messages {
+                        history::observe(state, message);
                     }
+                    if !state.history.borrow().rendering {
+                        history::update_status(state);
+                    }
+                    if !same_message_list(state, &chat_mid, &messages) {
+                        if !*state.stick_bottom.borrow() {
+                            apply_messages_preserving_scroll(state, messages);
+                        } else {
+                            apply_messages(state, messages);
+                        }
+                    }
+                }
+                Some(Pending::FetchOlder { chat_mid }) => {
+                    history::received(state, id, &chat_mid, &result);
                 }
                 Some(Pending::RefreshReactions { chat_mid }) => {
                     if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str()) {
@@ -845,6 +861,7 @@ pub(super) fn schedule_sidecar_recovery(state: &AppState) {
 }
 
 pub(super) fn recover_sidecar(state: &AppState) {
+    history::interrupted(state);
     locations::fail_pending_locations(state);
     restore_attachment_requests(state);
     chat_media_viewer::fail_pending_chat_media(state, &crate::i18n::t("protocol_offline"));

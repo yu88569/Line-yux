@@ -237,6 +237,7 @@ pub(super) fn confirm_attachments(state: &AppState, chat: &str) {
                         file_path: Some(path),
                         duration_ms: item.duration_ms.map(|v| v as i64),
                         flex: None,
+                        history_cursor: None,
                         album: None,
                         reply: None,
                         location: None,

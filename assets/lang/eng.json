@@ -418,5 +418,9 @@
   "location_address": "Address (optional)",
   "location_hint": "Paste coordinates, for example 13.7563, 100.5018. The point is sent to this chat.",
   "location_invalid": "Enter a valid latitude (-90 to 90) and longitude (-180 to 180), separated by a comma.",
-  "cancel": "Cancel"
+  "cancel": "Cancel",
+  "history_load": "Load older messages",
+  "history_loading": "Loading older messages…",
+  "history_retry": "Could not load older messages. Click to retry",
+  "history_end": "No older messages available"
 }

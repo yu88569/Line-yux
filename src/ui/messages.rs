@@ -59,7 +59,16 @@ pub(super) fn apply_messages_preserving_scroll(state: &AppState, messages: Vec<M
     apply_messages_inner(state, messages, true);
 }
 
-fn apply_messages_inner(state: &AppState, mut messages: Vec<MessageInfo>, preserve_scroll: bool) {
+fn apply_messages_inner(state: &AppState, messages: Vec<MessageInfo>, preserve_scroll: bool) {
+    history::ensure_chat(state);
+    let mut messages = history::merge_current(state, messages);
+    history::release_anchor(state);
+    let generation = {
+        let mut h = state.history.borrow_mut();
+        h.generation += 1;
+        h.rendering = true;
+        h.generation
+    };
     let saved_position = if preserve_scroll && !*state.stick_bottom.borrow() {
         Some(state.message_scroll.vadjustment().value())
     } else {
@@ -112,6 +121,7 @@ fn apply_messages_inner(state: &AppState, mut messages: Vec<MessageInfo>, preser
         *state.msg_list_fp.borrow_mut() = None;
     }
     if messages.is_empty() {
+        state.history.borrow_mut().rendering = false;
         *state.scroll_pinning.borrow_mut() = false;
         set_msg_state(state, "empty", Some(&crate::i18n::t("no_messages")));
         state.chat_subtitle.set_text(&crate::i18n::t("empty"));
@@ -139,21 +149,33 @@ fn apply_messages_inner(state: &AppState, mut messages: Vec<MessageInfo>, preser
     let state_c = state.clone();
     let batch = Rc::new(RefCell::new(messages));
     glib::idle_add_local(move || {
+        if state_c.history.borrow().generation != generation
+            || *state_c.current_chat.borrow() != chat_mid
+        {
+            return glib::ControlFlow::Break;
+        }
         let mut left = batch.borrow_mut();
         let take = left.len().min(14);
         if take == 0 {
+            history::update_status(&state_c);
             if let Some(position) = saved_position {
                 let restore = state_c.clone();
                 let expected_chat = chat_mid.clone();
                 glib::timeout_add_local_once(std::time::Duration::from_millis(100), move || {
-                    if *restore.current_chat.borrow() == expected_chat {
+                    if *restore.current_chat.borrow() == expected_chat
+                        && restore.history.borrow().generation == generation
+                    {
                         restore.message_scroll.vadjustment().set_value(position);
                         *restore.stick_bottom.borrow_mut() = false;
+                        *restore.scroll_pinning.borrow_mut() = false;
+                        restore.history.borrow_mut().rendering = false;
                     }
-                    *restore.scroll_pinning.borrow_mut() = false;
                 });
             } else {
-                pin_messages_to_latest(&state_c);
+                state_c.history.borrow_mut().rendering = false;
+                if *state_c.stick_bottom.borrow() {
+                    pin_messages_to_latest(&state_c);
+                }
             }
             if let Some(mid) = chat_mid.as_deref() {
                 mark_chat_read(&state_c, mid);
@@ -173,6 +195,7 @@ fn apply_messages_inner(state: &AppState, mut messages: Vec<MessageInfo>, preser
 }
 
 pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
+    history::observe(state, msg);
     if !msg.id.is_empty() && !state.seen_msg_ids.borrow_mut().insert(msg.id.clone()) {
         return;
     }
@@ -241,6 +264,7 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
     }
 
     let row = gtk::ListBoxRow::new();
+    row.add_css_class("line-history-message");
     let outer = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
@@ -1130,6 +1154,7 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
         file_path: Some(path.to_string()),
         duration_ms,
         flex: None,
+        history_cursor: None,
         album: None,
         reply: None,
         location: None,
@@ -1375,6 +1400,10 @@ pub(super) fn append_link_chips(_state: &AppState, bubble: &gtk::Box, text: &str
 }
 
 pub(super) fn clear_messages(state: &AppState) {
+    if state.current_chat.borrow().as_deref() != Some(state.history.borrow().chat_mid.as_str()) {
+        history::reset(state, state.current_chat.borrow().as_deref().unwrap_or(""));
+    }
+    state.history.borrow_mut().status = None;
     state.reply_context.borrow_mut().clear();
     stop_voice_playback(state);
     state.message_list.clear();

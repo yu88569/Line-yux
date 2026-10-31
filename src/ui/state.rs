@@ -67,6 +67,7 @@ pub(super) struct AppState {
     pub msg_empty: gtk::Label,
     pub msg_load_label: gtk::Label,
     pub msg_idle: gtk::Label,
+    pub history: Rc<RefCell<super::history::ChatHistory>>,
     pub current_chat: Rc<RefCell<Option<String>>>,
     pub chats: Rc<RefCell<Vec<ChatInfo>>>,
     pub sender_avatars: Rc<RefCell<super::sender_avatars::SenderAvatars>>,
@@ -188,6 +189,9 @@ pub(super) enum Pending {
     ListChats,
     ListFriends,
     FetchMessages {
+        chat_mid: String,
+    },
+    FetchOlder {
         chat_mid: String,
     },
     RefreshReactions {

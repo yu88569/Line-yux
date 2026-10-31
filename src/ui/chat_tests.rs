@@ -1349,3 +1349,177 @@ fn gtk_flex_chat_integration() {
     state.window.close();
     let _ = std::fs::remove_dir_all(temp);
 }
+
+#[test]
+#[ignore = "requires GTK display"]
+fn gtk_history_prepend_keeps_reading_anchor_and_live_rows() {
+    let (temp, _, _app, state) = chat_fixture("history", "dev.linegtk.HistoryFixture");
+    wire_scroll_pin(&state);
+    let mid = "u11111111111111111111111111111111";
+    *state.session_ready.borrow_mut() = true;
+    *state.current_chat.borrow_mut() = Some(mid.into());
+    history::reset(&state, mid);
+    state.stack.set_visible_child_name("shell");
+    state.msg_stack.set_visible_child_name("list");
+    state.window.present();
+    let message = |n: usize| -> MessageInfo {
+        serde_json::from_value(serde_json::json!({"id":n.to_string(),"from":mid,"text":format!("Message {n} with enough text to exercise a full visible chat row"),"contentType":"NONE","createdTime":1700000000000_i64 + n as i64 * 1000,"historyCursor":{"messageId":n.to_string(),"deliveredTime":n.to_string()}})).unwrap()
+    };
+    apply_messages(&state, (40..80).map(message).collect());
+    wait_for(|| {
+        !state.history.borrow().rendering
+            && state.message_scroll.vadjustment().upper()
+                > state.message_scroll.vadjustment().page_size()
+    });
+    state.history.borrow_mut().phase = history::LoadPhase::Loading(76);
+    history::failed(&state, 76, mid);
+    assert!(matches!(
+        state.history.borrow().phase,
+        history::LoadPhase::Failed
+    ));
+    assert_eq!(state.seen_msg_ids.borrow().len(), 40);
+    state.history.borrow_mut().phase = history::LoadPhase::Loading(77);
+    history::update_status(&state);
+    *state.stick_bottom.borrow_mut() = false;
+    *state.scroll_pinning.borrow_mut() = false;
+    state.message_scroll.vadjustment().set_value(0.0);
+    drain();
+    let anchor = state
+        .message_list
+        .rows()
+        .into_iter()
+        .find(|row| {
+            row.is_mapped()
+                && row.has_css_class("line-history-message")
+                && row
+                    .compute_bounds(&state.message_scroll)
+                    .is_some_and(|r| r.y() + r.height() > 0.0)
+        })
+        .unwrap();
+    let position = anchor.compute_bounds(&state.message_scroll).unwrap().y();
+    append_message(&state, &message(80), true);
+    let mut pending = message(81);
+    pending.id = "pending-history-test".into();
+    pending.mine = true;
+    append_message(&state, &pending, false);
+    let old_incoming = state.last_incoming_id.borrow().clone();
+    let page: Vec<_> = (0..40).map(|n| serde_json::json!({"id":n.to_string(),"from":mid,"text":format!("Older message {n}"),"contentType":"NONE","createdTime":1700000000000_i64+n*1000,"historyCursor":{"messageId":n.to_string(),"deliveredTime":n.to_string()}})).collect();
+    history::received(
+        &state,
+        77,
+        mid,
+        &serde_json::json!({"messages":page,"before":{"messageId":"0","deliveredTime":"0"},"hasMore":false}),
+    );
+    let settled = Rc::new(std::cell::Cell::new(0));
+    let ticks = settled.clone();
+    state.window.add_tick_callback(move |_, _| {
+        ticks.set(ticks.get() + 1);
+        if ticks.get() >= 6 {
+            glib::ControlFlow::Break
+        } else {
+            glib::ControlFlow::Continue
+        }
+    });
+    wait_for(|| settled.get() >= 6);
+    wait_for(|| {
+        anchor.is_mapped()
+            && anchor
+                .compute_bounds(&state.message_scroll)
+                .is_some_and(|r| (r.y() - position).abs() < 2.0)
+    });
+    let rows = state.message_list.rows();
+    let index = rows.iter().position(|row| row == &anchor).unwrap();
+    if index > 0 {
+        let growing = &rows[index - 1];
+        growing.set_size_request(-1, growing.height() + 80);
+        let settled = Rc::new(std::cell::Cell::new(0));
+        let ticks = settled.clone();
+        state.window.add_tick_callback(move |_, _| {
+            ticks.set(ticks.get() + 1);
+            if ticks.get() >= 6 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+        wait_for(|| settled.get() >= 6);
+        assert!(
+            (anchor.compute_bounds(&state.message_scroll).unwrap().y() - position).abs() < 2.0,
+            "delayed media resize preserves reading anchor"
+        );
+    }
+    let paintable = gtk::WidgetPaintable::new(Some(&state.conversation));
+    let snapshot = gtk::Snapshot::new();
+    paintable.snapshot(
+        &snapshot,
+        state.conversation.width() as f64,
+        state.conversation.height() as f64,
+    );
+    state
+        .window
+        .renderer()
+        .unwrap()
+        .render_texture(snapshot.to_node().unwrap(), None)
+        .save_to_png("/tmp/line-gtk-history.png")
+        .unwrap();
+    assert!(state.seen_msg_ids.borrow().contains("80"));
+    assert!(
+        state
+            .pending_rows
+            .borrow()
+            .contains_key("pending-history-test")
+    );
+    assert_eq!(*state.last_incoming_id.borrow(), old_incoming);
+    assert_eq!(state.history.borrow().messages.len(), 82);
+    assert_eq!(
+        state
+            .message_list
+            .rows()
+            .iter()
+            .filter(|row| row.has_css_class("line-day-sep-row"))
+            .count(),
+        1
+    );
+    assert!(matches!(
+        state.history.borrow().phase,
+        history::LoadPhase::Exhausted
+    ));
+    assert!(!*state.stick_bottom.borrow());
+    let before = state.message_list.rows().len();
+    history::received(
+        &state,
+        77,
+        mid,
+        &serde_json::json!({"messages":page,"hasMore":false}),
+    );
+    assert_eq!(state.message_list.rows().len(), before);
+    state.history.borrow_mut().phase = history::LoadPhase::Loading(90);
+    history::interrupted(&state);
+    assert!(matches!(
+        state.history.borrow().phase,
+        history::LoadPhase::Failed
+    ));
+    assert_eq!(state.history.borrow().messages.len(), 82);
+    history::received(
+        &state,
+        90,
+        mid,
+        &serde_json::json!({"messages":page,"hasMore":false}),
+    );
+    assert_eq!(state.history.borrow().messages.len(), 82);
+    apply_messages(&state, (200..240).map(message).collect());
+    history::reset(&state, "u22222222222222222222222222222222");
+    *state.current_chat.borrow_mut() = Some("u22222222222222222222222222222222".into());
+    apply_messages(&state, vec![message(100)]);
+    wait_for(|| !state.history.borrow().rendering);
+    assert_eq!(state.seen_msg_ids.borrow().len(), 1);
+    history::received(
+        &state,
+        77,
+        mid,
+        &serde_json::json!({"messages":page,"hasMore":false}),
+    );
+    assert_eq!(state.seen_msg_ids.borrow().len(), 1);
+    state.window.close();
+    let _ = std::fs::remove_dir_all(temp);
+}

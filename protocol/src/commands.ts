@@ -1,3 +1,4 @@
+import { historyCursor, mergeHistory } from "./history.ts";
 import { needsFlexMetadataRefresh } from "./message_view.ts";
 import type { Location } from "@evex/linejs-types";
 import {
@@ -492,6 +493,54 @@ export function createCommandService(runtime: CommandRuntime) {
     });
   }
 
+  const history = new Map<string, Json[]>();
+  let historyClient: Client | null = null;
+  let historyEpoch = 0;
+  const historyWrites = new Map<string, Promise<Json[]>>();
+  async function clearHistory() {
+    history.clear();
+    historyEpoch++;
+    await Promise.allSettled([...historyWrites.values()]);
+  }
+  async function commitHistory(
+    chatMid: string,
+    incoming: Json[],
+    client: Client,
+    epoch: number,
+  ): Promise<Json[]> {
+    const previous = historyWrites.get(chatMid) ?? Promise.resolve([]);
+    const write = previous.catch(() => []).then(async () => {
+      if (runtime.getClient() !== client || epoch !== historyEpoch) {
+        throw new Error("session_changed");
+      }
+      const old = history.get(chatMid) ?? msgCache.get(chatMid)?.messages ??
+        await loadDiskMessages(chatMid) ?? [];
+      if (runtime.getClient() !== client || epoch !== historyEpoch) {
+        throw new Error("session_changed");
+      }
+      const merged = mergeHistory(old, incoming);
+      history.set(chatMid, merged);
+      msgCache.set(chatMid, { at: Date.now(), messages: merged });
+      await saveDiskMessages(chatMid, merged);
+      if (runtime.getClient() !== client || epoch !== historyEpoch) {
+        throw new Error("session_changed");
+      }
+      return merged;
+    });
+    historyWrites.set(chatMid, write);
+    try {
+      return await write;
+    } finally {
+      if (historyWrites.get(chatMid) === write) historyWrites.delete(chatMid);
+    }
+  }
+  function scopeHistory(client: Client) {
+    if (historyClient !== client) {
+      history.clear();
+      historyEpoch++;
+      historyClient = client;
+    }
+  }
   const forcedRefreshes = new Map<string, Promise<void>>();
   async function doFetchMessages(
     id: number | string | null,
@@ -534,6 +583,8 @@ export function createCommandService(runtime: CommandRuntime) {
       return;
     }
 
+    scopeHistory(client);
+    const requestEpoch = historyEpoch;
     await refreshCachePolicy();
     const progress = (payload: Json) => {
       if (!background) emitEvent("progress", payload);
@@ -545,6 +596,9 @@ export function createCommandService(runtime: CommandRuntime) {
         const cached = msgCache.get(chatMid);
         if (
           !force && cached && Date.now() - cached.at < cachePolicy().memMsg &&
+          !cached.messages.some((message) =>
+            !historyCursor(message.historyCursor)
+          ) &&
           !needsFlexMetadataRefresh(cached.messages) &&
           !needsFileMetadataRefresh(cached.messages) &&
           !needsAlbumMetadataRefresh(cached.messages) &&
@@ -560,6 +614,10 @@ export function createCommandService(runtime: CommandRuntime) {
         if (!force) {
           const disk = await loadDiskMessages(chatMid);
           if (disk?.length) {
+            history.set(
+              chatMid,
+              mergeHistory(history.get(chatMid) ?? [], disk),
+            );
             msgCache.set(chatMid, { at: Date.now(), messages: disk });
             emitEvent("messages", {
               chatMid,
@@ -671,9 +729,11 @@ export function createCommandService(runtime: CommandRuntime) {
           }
 
           const previous = new Map(
-            (msgCache.get(chatMid)?.messages ?? []).map((
-              m,
-            ) => [String(m.id), m]),
+            (history.get(chatMid) ?? msgCache.get(chatMid)?.messages ?? []).map(
+              (
+                m,
+              ) => [String(m.id), m],
+            ),
           );
           for (const message of out) {
             if (message.contentType !== "FILE") continue;
@@ -686,9 +746,10 @@ export function createCommandService(runtime: CommandRuntime) {
               attachmentName(downloaded.fileName);
             message.text = message.fileName || "[File]";
           }
-          out.sort((a, b) => Number(a.createdTime) - Number(b.createdTime));
-          msgCache.set(chatMid, { at: Date.now(), messages: out });
-          await saveDiskMessages(chatMid, out);
+          if (runtime.getClient() !== client || requestEpoch !== historyEpoch) {
+            throw new Error("session_changed");
+          }
+          out = await commitHistory(chatMid, out, client, requestEpoch);
           const messages = await forUiMessages(out);
           progress({
             scope: "messages",
@@ -718,6 +779,56 @@ export function createCommandService(runtime: CommandRuntime) {
       );
     } else {
       ok(id, result.result);
+    }
+  }
+
+  async function fetchOlderMessages(
+    id: number | string | null,
+    chatMid: string,
+    beforeValue: unknown,
+  ) {
+    const client = runtime.getClient();
+    const before = historyCursor(beforeValue);
+    if (!client) {
+      fail(id, "not_logged_in");
+      return;
+    }
+    if (!chatMid || !before) {
+      fail(id, "invalid_history_cursor");
+      return;
+    }
+    scopeHistory(client);
+    const requestEpoch = historyEpoch;
+    try {
+      const raw = await client.base.talk.getPreviousMessagesV2WithRequest({
+        request: {
+          messageBoxId: chatMid,
+          endMessageId: {
+            messageId: BigInt(before.messageId),
+            deliveredTime: BigInt(before.deliveredTime),
+          },
+          messagesCount: 41,
+        },
+      });
+      const next = raw.length ? historyCursor(raw[raw.length - 1]) : null;
+      const page: Json[] = [];
+      for (const message of raw) {
+        if (String(message.id) === before.messageId) continue;
+        page.push(await summarizeRawMessage(message, { withMedia: false }));
+      }
+      if (runtime.getClient() !== client || requestEpoch !== historyEpoch) {
+        throw new Error("session_changed");
+      }
+      await commitHistory(chatMid, page, client, requestEpoch);
+      ok(id, {
+        messages: await forUiMessages(page),
+        before: next,
+        hasMore: raw.length >= 41 && next !== null &&
+          next.messageId !== before.messageId,
+      });
+      hydrateMedia(page, chatMid);
+    } catch (error) {
+      fail(id, error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -865,6 +976,8 @@ export function createCommandService(runtime: CommandRuntime) {
     loginToken: doLoginToken,
     listChats: doListChats,
     fetchMessages: doFetchMessages,
+    fetchOlderMessages,
+    clearHistory,
     sendMessage: doSend,
   };
 }

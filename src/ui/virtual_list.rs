@@ -9,6 +9,7 @@ use gtk::prelude::*;
 pub struct VirtualMessageList {
     view: gtk::ListView,
     store: gtk::gio::ListStore,
+    staging: std::rc::Rc<std::cell::RefCell<Option<Vec<gtk::glib::BoxedAnyObject>>>>,
 }
 
 impl VirtualMessageList {
@@ -42,7 +43,11 @@ impl VirtualMessageList {
             .margin_bottom(8)
             .single_click_activate(false)
             .build();
-        Self { view, store }
+        Self {
+            view,
+            store,
+            staging: Default::default(),
+        }
     }
 
     pub fn widget(&self) -> &gtk::ListView {
@@ -51,7 +56,12 @@ impl VirtualMessageList {
 
     pub fn append(&self, row: &impl IsA<gtk::Widget>) {
         let widget = row.clone().upcast::<gtk::Widget>();
-        self.store.append(&gtk::glib::BoxedAnyObject::new(widget));
+        let item = gtk::glib::BoxedAnyObject::new(widget);
+        if let Some(staging) = self.staging.borrow_mut().as_mut() {
+            staging.push(item);
+        } else {
+            self.store.append(&item);
+        }
     }
 
     pub fn remove(&self, row: &impl IsA<gtk::Widget>) {
@@ -89,7 +99,27 @@ impl VirtualMessageList {
         }
     }
 
-    fn item_at(&self, index: u32) -> Option<gtk::Widget> {
+    pub fn prepend_with(&self, append: impl FnOnce()) {
+        *self.staging.borrow_mut() = Some(Vec::new());
+        append();
+        let rows = self.staging.borrow_mut().take().unwrap_or_default();
+        self.store.splice(0, 0, &rows);
+    }
+
+    pub fn rows(&self) -> Vec<gtk::Widget> {
+        (0..self.store.n_items())
+            .filter_map(|i| self.item_at(i))
+            .collect()
+    }
+
+    pub fn reveal(&self, row: &gtk::Widget) {
+        if let Some(index) = self.rows().iter().position(|w| w == row) {
+            self.view
+                .scroll_to(index as u32, gtk::ListScrollFlags::NONE, None);
+        }
+    }
+
+    pub fn item_at(&self, index: u32) -> Option<gtk::Widget> {
         let item = self
             .store
             .item(index)

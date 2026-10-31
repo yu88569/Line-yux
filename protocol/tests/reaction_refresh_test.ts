@@ -34,12 +34,15 @@ Deno.test("concurrent forced message refreshes respond to every request", async 
     },
     bumpMediaEpoch: () => 0,
     saveDiskMessages: () => Promise.resolve(),
+    loadDiskMessages: () => Promise.resolve(null),
     forUiMessages: (messages: unknown) => Promise.resolve(messages),
     hydrateMedia: () => {},
     emitEvent: () => {},
     ok: (id: unknown, result: unknown) => replies.push({ id, result }),
     fail: (id: unknown, error: unknown) => replies.push({ id, error }),
   } as unknown as CommandRuntime;
+  const stableClient = runtime.getClient();
+  runtime.getClient = () => stableClient;
   const service = createCommandService(runtime);
   const first = service.fetchMessages(1, mid, 40, true);
   await started.promise;

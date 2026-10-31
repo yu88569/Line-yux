@@ -168,8 +168,17 @@ fn deserialize_reaction_type<'de, D: serde::Deserializer<'de>>(
     })
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryCursor {
+    pub message_id: String,
+    pub delivered_time: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MessageInfo {
+    #[serde(rename = "historyCursor", default)]
+    pub history_cursor: Option<HistoryCursor>,
     #[serde(default)]
     pub reactions: Vec<MessageReaction>,
     #[serde(default)]
