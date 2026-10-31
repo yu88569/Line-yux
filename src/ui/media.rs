@@ -928,6 +928,13 @@ fn render_image_viewport(
     }
 }
 
+fn fit_image(width: i32, height: i32, image_width: i32, image_height: i32) -> (f64, (f64, f64)) {
+    let (w, h) = (width.max(1) as f64, height.max(1) as f64);
+    let (iw, ih) = (image_width.max(1) as f64, image_height.max(1) as f64);
+    let zoom = (w / iw).min(h / ih).min(1.0);
+    (zoom, ((w - iw * zoom) / 2.0, (h - ih * zoom) / 2.0))
+}
+
 pub(super) fn append_image_viewer(
     state: &AppState,
     bar: &gtk::Box,
@@ -952,7 +959,7 @@ pub(super) fn append_image_viewer(
     // View transform: image pixel (ix,iy) -> widget (ox + ix*zoom, oy + iy*zoom).
     let zoom = Rc::new(RefCell::new(1.0_f64));
     let offset = Rc::new(RefCell::new((0.0_f64, 0.0_f64)));
-    let fitted = Rc::new(RefCell::new(false));
+    let fit_mode = Rc::new(RefCell::new(true));
     let fast_paint = Rc::new(RefCell::new(false));
     let pixbuf = Rc::new(base_pixbuf);
     // Reused viewport-sized buffer so pan/zoom never reallocates every frame.
@@ -1162,9 +1169,9 @@ pub(super) fn append_image_viewer(
         Rc::new(move || {
             let aw = area.width().max(1) as f64;
             let ah = area.height().max(1) as f64;
-            let z = (aw / nat_w as f64).min(ah / nat_h as f64).clamp(0.05, 1.0);
+            let (z, origin) = fit_image(aw as i32, ah as i32, nat_w, nat_h);
             *zoom.borrow_mut() = z;
-            *offset.borrow_mut() = ((aw - nat_w as f64 * z) * 0.5, (ah - nat_h as f64 * z) * 0.5);
+            *offset.borrow_mut() = origin;
             area.queue_draw();
         })
     };
@@ -1174,7 +1181,9 @@ pub(super) fn append_image_viewer(
         let offset = offset.clone();
         let area = area.clone();
         let fast_paint = fast_paint.clone();
+        let fit_mode = fit_mode.clone();
         Rc::new(move |factor: f64, pivot_x: f64, pivot_y: f64, fast: bool| {
+            *fit_mode.borrow_mut() = false;
             let old = (*zoom.borrow()).max(0.01);
             let new_z = (old * factor).clamp(0.05, 16.0);
             if (new_z - old).abs() < f64::EPSILON {
@@ -1192,13 +1201,15 @@ pub(super) fn append_image_viewer(
     };
 
     {
-        let area = area.clone();
-        let fitted = fitted.clone();
-        let fit_to_area = fit_to_area.clone();
-        area.connect_resize(move |_, _, _| {
-            if !*fitted.borrow() {
-                *fitted.borrow_mut() = true;
-                fit_to_area();
+        let fit_mode = fit_mode.clone();
+        let zoom = zoom.clone();
+        let offset = offset.clone();
+        area.connect_resize(move |area, width, height| {
+            if *fit_mode.borrow() && width > 1 && height > 1 {
+                let (z, origin) = fit_image(width, height, nat_w, nat_h);
+                *zoom.borrow_mut() = z;
+                *offset.borrow_mut() = origin;
+                area.queue_draw();
             }
         });
     }
@@ -1230,7 +1241,9 @@ pub(super) fn append_image_viewer(
     {
         let fit_to_area = fit_to_area.clone();
         let fast_paint = fast_paint.clone();
+        let fit_mode = fit_mode.clone();
         zoom_reset.connect_clicked(move |_| {
+            *fit_mode.borrow_mut() = true;
             *fast_paint.borrow_mut() = false;
             fit_to_area();
         });
@@ -1346,7 +1359,9 @@ pub(super) fn append_image_viewer(
         let offset = offset.clone();
         let area = area.clone();
         let fast_paint = fast_paint.clone();
+        let fit_mode = fit_mode.clone();
         scroll_ctl.connect_scroll(move |ctl, dx, dy| {
+            *fit_mode.borrow_mut() = false;
             let state = ctl.current_event_state();
             if state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
                 let px = area.width() as f64 * 0.5;
@@ -1390,10 +1405,12 @@ pub(super) fn append_image_viewer(
         let zoom = zoom.clone();
         let area = area.clone();
         let fast_paint = fast_paint.clone();
+        let fit_mode = fit_mode.clone();
         drag.connect_drag_begin(move |gesture, x, y| {
             let selected = *tool.borrow();
             let origin = *offset.borrow();
             if selected == ViewerTool::Pan {
+                *fit_mode.borrow_mut() = false;
                 *active_drag.borrow_mut() = Some(ViewerDrag::Pan { origin });
                 *fast_paint.borrow_mut() = true;
                 area.set_cursor_from_name(Some("grabbing"));
@@ -2485,6 +2502,24 @@ mod image_viewport_tests {
 #[cfg(test)]
 mod file_tests {
     use super::*;
+
+    #[test]
+    fn fit_centers_entire_images_after_viewport_resizes() {
+        for (width, height, iw, ih) in [
+            (900, 900, 886, 1847),
+            (900, 900, 1920, 1080),
+            (400, 300, 10000, 8000),
+            (1200, 800, 300, 200),
+        ] {
+            let (zoom, (x, y)) = fit_image(width, height, iw, ih);
+            let displayed_w = iw as f64 * zoom;
+            let displayed_h = ih as f64 * zoom;
+            assert!(x >= 0.0 && y >= 0.0);
+            assert!(displayed_w <= width as f64 + 1e-9 && displayed_h <= height as f64 + 1e-9);
+            assert!((2.0 * x + displayed_w - width as f64).abs() < 1e-9);
+            assert!((2.0 * y + displayed_h - height as f64).abs() < 1e-9);
+        }
+    }
 
     #[test]
     fn viewer_uses_final_extension_not_path_substrings() {

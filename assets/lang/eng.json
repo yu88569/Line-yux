@@ -408,6 +408,8 @@
   "reply": "Reply",
   "cancel_reply": "Cancel reply",
   "reply_message": "Original message",
+  "reply_back": "Back to reply",
+  "reply_not_found": "Original message not found",
   "reply_text_only": "Replies support text messages. Cancel reply to send attachments, stickers, or locations.",
   "share_location": "Share location",
   "location": "Location",

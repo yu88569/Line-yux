@@ -2,6 +2,21 @@ use super::*;
 use crate::protocol::ReplyTarget;
 
 pub(super) fn setup_reply_strip(state: &AppState) {
+    state.reply_back.set_label(&crate::i18n::t("reply_back"));
+    state.reply_back.set_visible(false);
+    let s = state.clone();
+    state.reply_back.connect_clicked(move |_| {
+        let jump = s.reply_jump.borrow_mut().take();
+        s.reply_back.set_visible(false);
+        if let Some((chat, _, origin)) = jump {
+            if s.current_chat.borrow().as_deref() == Some(&chat) {
+                reveal_message(&s, &origin);
+            }
+        }
+    });
+    state
+        .conversation
+        .insert_child_after(&state.reply_back, Some(&state.msg_stack));
     state.reply_strip.add_css_class("card");
     state.reply_strip.set_margin_start(12);
     state.reply_strip.set_margin_end(12);
@@ -159,13 +174,50 @@ pub(super) fn append_reply_quote(state: &AppState, bubble: &gtk::Box, msg: &Mess
         } else {
             reply.preview.clone()
         };
-        let quote = gtk::Label::builder()
+        let label = gtk::Label::builder()
             .label(format!("↪ {}\n{}", reply.sender, preview))
             .xalign(0.0)
             .wrap(true)
             .max_width_chars(38)
-            .css_classes(["dim-label", "line-reply-quote"])
+            .css_classes(["dim-label"])
             .build();
+        let quote = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .css_classes(["line-reply-quote"])
+            .build();
+        let thumbnail = gtk::Picture::builder()
+            .width_request(48)
+            .height_request(48)
+            .content_fit(gtk::ContentFit::Cover)
+            .can_shrink(true)
+            .visible(false)
+            .build();
+        quote.append(&thumbnail);
+        quote.append(&label);
+        state
+            .reply_thumbnails
+            .borrow_mut()
+            .entry(reply.id.clone())
+            .or_default()
+            .push(thumbnail.downgrade());
+        let target_id = reply.id.clone();
+        if let Some(original) = state.media_msgs.borrow().get(&target_id).cloned() {
+            update_reply_thumbnail(state, &original);
+        }
+        let origin_id = msg.id.clone();
+        let s = state.clone();
+        let click = gtk::GestureClick::new();
+        click.connect_released(move |_, _, _, _| {
+            let Some(chat) = s.current_chat.borrow().clone() else {
+                return;
+            };
+            *s.reply_jump.borrow_mut() = Some((chat, target_id.clone(), origin_id.clone()));
+            s.reply_back.set_visible(true);
+            continue_reply_jump(&s);
+        });
+        quote.set_cursor_from_name(Some("pointer"));
+        quote.add_controller(click);
         bubble.append(&quote);
     }
 }
@@ -190,4 +242,86 @@ pub(super) fn reply_sender(state: &AppState, msg: &MessageInfo) -> String {
         .find(|c| c.mid == msg.from)
         .map(|c| c.name.clone())
         .unwrap_or_default()
+}
+
+fn reveal_message(state: &AppState, id: &str) -> bool {
+    if let Some(row) = state
+        .message_list
+        .rows()
+        .into_iter()
+        .find(|row| row.has_css_class("line-history-message") && row.widget_name() == id)
+    {
+        *state.stick_bottom.borrow_mut() = false;
+        state.message_list.reveal(&row);
+        true
+    } else {
+        false
+    }
+}
+
+pub(super) fn continue_reply_jump(state: &AppState) {
+    let jump = state.reply_jump.borrow().clone();
+    let Some((chat, target, _)) = jump else {
+        return;
+    };
+    if state.current_chat.borrow().as_deref() != Some(&chat) {
+        *state.reply_jump.borrow_mut() = None;
+        state.reply_back.set_visible(false);
+        return;
+    }
+    if target.is_empty() {
+        return;
+    }
+    if reveal_message(state, &target) {
+        if let Some(jump) = state.reply_jump.borrow_mut().as_mut() {
+            jump.1.clear();
+        }
+        return;
+    }
+    let phase = {
+        let h = state.history.borrow();
+        match h.phase {
+            history::LoadPhase::Ready if h.before.is_some() => 0,
+            history::LoadPhase::Loading(_) => 1,
+            _ => 2,
+        }
+    };
+    match phase {
+        0 => history::load(state),
+        1 => {}
+        _ => {
+            toast(state, &crate::i18n::t("reply_not_found"));
+        }
+    }
+}
+
+pub(super) fn update_reply_thumbnail(state: &AppState, original: &MessageInfo) {
+    if !original.content_type.eq_ignore_ascii_case("image") {
+        return;
+    }
+    let path = original
+        .image_path
+        .as_ref()
+        .filter(|p| std::path::Path::new(p).is_file())
+        .cloned()
+        .or_else(|| {
+            state
+                .media_ready_paths
+                .borrow()
+                .get(&original.id)
+                .filter(|p| std::path::Path::new(p).is_file())
+                .cloned()
+        });
+    let Some(path) = path else { return };
+    if let Some(pictures) = state.reply_thumbnails.borrow_mut().get_mut(&original.id) {
+        pictures.retain(|weak| {
+            if let Some(picture) = weak.upgrade() {
+                picture.set_visible(true);
+                attach_texture_async(picture, path.clone(), 96);
+                true
+            } else {
+                false
+            }
+        });
+    }
 }

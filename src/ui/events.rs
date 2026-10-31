@@ -364,6 +364,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     meta.file_path = Some(fp.clone());
                 }
             }
+            let original = state.media_msgs.borrow().get(&message_id).cloned();
+            if let Some(original) = original {
+                super::replies::update_reply_thumbnail(state, &original);
+            }
             if let Some(path) = audio_path {
                 if std::path::Path::new(&path).exists() {
                     attach_audio_to_slot(state, &message_id, &path);

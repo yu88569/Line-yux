@@ -265,6 +265,7 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
 
     let row = gtk::ListBoxRow::new();
     row.add_css_class("line-history-message");
+    row.set_widget_name(&msg.id);
     let outer = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
@@ -272,7 +273,9 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         .valign(gtk::Align::End)
         .build();
 
+    super::replies::update_reply_thumbnail(state, msg);
     let is_sticker = msg.content_type.eq_ignore_ascii_case("sticker");
+    let is_image = msg.content_type.eq_ignore_ascii_case("image");
     let is_flex = msg.content_type.eq_ignore_ascii_case("flex") || msg.flex.is_some();
     let is_pending = msg.id.starts_with("pending-");
     let bubble = gtk::Box::builder()
@@ -285,6 +288,8 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         })
         .css_classes(if is_sticker {
             vec!["line-bubble", "line-bubble-sticker"]
+        } else if is_image {
+            vec!["line-bubble", "line-bubble-media"]
         } else if is_flex {
             vec!["line-bubble", "line-bubble-in"]
         } else {
@@ -324,7 +329,6 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
     let is_audio = msg.content_type.eq_ignore_ascii_case("audio");
     let is_file = msg.content_type.eq_ignore_ascii_case("file");
     let is_video = msg.content_type.eq_ignore_ascii_case("video");
-    let is_image = msg.content_type.eq_ignore_ascii_case("image");
     let has_audio = msg
         .audio_path
         .as_deref()
@@ -610,8 +614,8 @@ pub(super) fn format_msg_time(ts_ms: i64) -> String {
     };
     chrono::DateTime::from_timestamp(secs, 0)
         .map(|d| {
-            d.with_timezone(&chrono::Local)
-                .format("%-I:%M %p")
+            d.with_timezone(&chrono::FixedOffset::east_opt(7 * 3600).unwrap())
+                .format("%H:%M")
                 .to_string()
         })
         .unwrap_or_default()
@@ -1405,6 +1409,7 @@ pub(super) fn clear_messages(state: &AppState) {
     }
     state.history.borrow_mut().status = None;
     state.reply_context.borrow_mut().clear();
+    state.reply_thumbnails.borrow_mut().clear();
     stop_voice_playback(state);
     state.message_list.clear();
     state.sender_avatars.borrow_mut().clear_rows();
@@ -1773,5 +1778,14 @@ mod flex_refresh_tests {
             message_list_fingerprint(&[old]),
             message_list_fingerprint(&[new])
         );
+    }
+}
+
+#[cfg(test)]
+mod thai_time_tests {
+    #[test]
+    fn displays_bangkok_time_in_24_hour_format() {
+        assert_eq!(super::format_msg_time(1_704_067_200), "07:00");
+        assert_eq!(super::format_msg_time(1_704_110_400_000), "19:00");
     }
 }

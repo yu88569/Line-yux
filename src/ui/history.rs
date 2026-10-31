@@ -23,6 +23,8 @@ pub(super) struct ChatHistory {
 }
 
 pub(super) fn reset(state: &AppState, mid: &str) {
+    *state.reply_jump.borrow_mut() = None;
+    state.reply_back.set_visible(false);
     let generation = state.history.borrow().generation + 1;
     *state.history.borrow_mut() = ChatHistory {
         chat_mid: mid.into(),
@@ -217,6 +219,14 @@ pub(super) fn failed(state: &AppState, id: u64, chat_mid: &str) {
     }
     state.history.borrow_mut().phase = LoadPhase::Failed;
     update_status(state);
+    let navigating = state
+        .reply_jump
+        .borrow()
+        .as_ref()
+        .is_some_and(|jump| !jump.1.is_empty());
+    if navigating {
+        super::replies::continue_reply_jump(state);
+    }
 }
 
 pub(super) fn received(state: &AppState, id: u64, chat_mid: &str, result: &serde_json::Value) {
@@ -295,6 +305,16 @@ pub(super) fn received(state: &AppState, id: u64, chat_mid: &str, result: &serde
     }
     update_status(state);
     *state.scroll_pinning.borrow_mut() = false;
+    let navigating = state
+        .reply_jump
+        .borrow()
+        .as_ref()
+        .is_some_and(|jump| !jump.1.is_empty());
+    if navigating {
+        release_anchor(state);
+        super::replies::continue_reply_jump(state);
+        return;
+    }
     let state_c = state.clone();
     let generation = state.history.borrow().generation;
     let frames = std::cell::Cell::new(0);

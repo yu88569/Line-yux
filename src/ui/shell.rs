@@ -943,13 +943,16 @@ pub fn load_css() {
             border-radius: 12px;
             max-width: min(420px, 72%);
         }
-        .line-bubble-sticker {
+        .line-bubble.line-bubble-sticker,
+        .line-bubble.line-bubble-media {
             background: transparent;
             background-color: transparent;
             border: none;
             box-shadow: none;
             padding: 0;
             margin: 0;
+        }
+        .line-bubble.line-bubble-sticker {
             max-width: min(160px, 56%);
         }
         .line-bubble-sticker .line-bubble-image,
