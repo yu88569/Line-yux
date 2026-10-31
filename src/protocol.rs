@@ -53,7 +53,7 @@ pub struct ChatInfo {
     pub muted: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FlexAction {
     #[serde(default)]
     pub label: String,
@@ -65,8 +65,10 @@ pub struct FlexAction {
     pub uri: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FlexInfo {
+    #[serde(default)]
+    pub contents: Option<Value>,
     #[serde(rename = "altText", default)]
     pub alt_text: String,
     #[serde(default)]

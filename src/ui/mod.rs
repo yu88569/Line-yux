@@ -15,6 +15,7 @@ mod events;
 #[cfg(test)]
 mod file_action_tests;
 mod file_actions;
+mod flex;
 mod friends;
 mod locations;
 mod login;

@@ -961,6 +961,12 @@ pub fn load_css() {
             border-radius: 0;
             max-width: 160px;
         }
+        .line-bubble.line-bubble-flex {
+            padding: 0;
+            background: transparent;
+            border: none;
+            box-shadow: none;
+        }
         .line-flex-card {
             border-radius: 12px;
             padding: 8px 12px;

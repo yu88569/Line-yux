@@ -1,3 +1,4 @@
+import { needsFlexMetadataRefresh } from "./message_view.ts";
 import type { Location } from "@evex/linejs-types";
 import {
   LOCATION_METADATA_VERSION,
@@ -544,6 +545,7 @@ export function createCommandService(runtime: CommandRuntime) {
         const cached = msgCache.get(chatMid);
         if (
           !force && cached && Date.now() - cached.at < cachePolicy().memMsg &&
+          !needsFlexMetadataRefresh(cached.messages) &&
           !needsFileMetadataRefresh(cached.messages) &&
           !needsAlbumMetadataRefresh(cached.messages) &&
           !needsLocationMetadataRefresh(cached.messages) &&

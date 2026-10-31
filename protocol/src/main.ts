@@ -1,3 +1,4 @@
+import { FLEX_METADATA_VERSION } from "./message_view.ts";
 import { reactMessage, summarizeReactions } from "./reactions.ts";
 import { locationPayload } from "./locations.ts";
 import { patchMessageDecryption } from "./message_decryption.ts";
@@ -1007,6 +1008,7 @@ async function summarizeTalkMessage(
     stickerId: stkId || null,
     stickerPackageId: stkPkg || null,
     flex,
+    flexMetadataVersion: contentType === "FLEX" ? FLEX_METADATA_VERSION : null,
     album: extractAlbum(meta),
     albumMetadataVersion: contentType === "POSTNOTIFICATION"
       ? ALBUM_METADATA_VERSION
@@ -1071,6 +1073,9 @@ async function summarizeRawMessage(
       stickerId: meta.STKID || null,
       stickerPackageId: meta.STKPKGID || null,
       flex: contentType === "FLEX" ? extractFlex(meta) : null,
+      flexMetadataVersion: contentType === "FLEX"
+        ? FLEX_METADATA_VERSION
+        : null,
       album: extractAlbum(meta),
       albumMetadataVersion: contentType === "POSTNOTIFICATION"
         ? ALBUM_METADATA_VERSION

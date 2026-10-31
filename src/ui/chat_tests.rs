@@ -1285,3 +1285,67 @@ fn gtk_reaction_refresh_preserves_scroll_position() {
     clear_messages(&state);
     drain();
 }
+
+#[test]
+#[ignore = "requires GTK display"]
+fn gtk_flex_chat_integration() {
+    let (temp, _, _app, state) = chat_fixture("flex", "dev.linegtk.FlexFixture");
+    *state.session_ready.borrow_mut() = true;
+    let peer = "u11111111111111111111111111111111";
+    *state.current_chat.borrow_mut() = Some(peer.into());
+    state.stack.set_visible_child_name("shell");
+    state.msg_stack.set_visible_child_name("list");
+    let contents = if let Ok(path) = std::env::var("LINE_FLEX_FIXTURE") {
+        let roots: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        roots[0].clone()
+    } else {
+        serde_json::json!({"type":"bubble","header":{"type":"box","layout":"vertical","backgroundColor":"#0b6b5a","contents":[{"type":"text","text":"พรุ่งนี้มี 1 รายการ","color":"#ffffff","wrap":true,"weight":"bold"}]},"body":{"type":"box","layout":"vertical","contents":[{"type":"text","text":"ประชุมรับการประเมินคุณภาพมาตรฐานโรงพยาบาล","wrap":true},{"type":"text","text":"09:00–11:00 น.","wrap":true}]}})
+    };
+    let incoming: MessageInfo = serde_json::from_value(serde_json::json!({"id":"flex-1","from":peer,"contentType":"FLEX","flex":{"altText":"Schedule","contents":contents}})).unwrap();
+    append_message(&state, &incoming, false);
+    state.window.present();
+    wait_for(|| {
+        descendants(state.conversation.upcast_ref())
+            .iter()
+            .any(|w| w.has_css_class("line-bubble-flex") && w.is_mapped())
+    });
+    let bubble = descendants(state.conversation.upcast_ref())
+        .into_iter()
+        .find(|w| w.has_css_class("line-bubble-flex"))
+        .unwrap();
+    let card = bubble.first_child().unwrap();
+    assert_eq!(
+        bubble.width(),
+        card.width(),
+        "structured cards have no extra speech bubble padding"
+    );
+    assert!(
+        card.width() <= 360,
+        "card remains bounded inside conversation"
+    );
+    assert!(bubble.compute_bounds(&state.conversation).unwrap().x() >= 0.0);
+    let frame = Rc::new(std::cell::Cell::new(false));
+    let ready = frame.clone();
+    state.window.add_tick_callback(move |_, _| {
+        ready.set(true);
+        glib::ControlFlow::Break
+    });
+    wait_for(|| frame.get());
+    let paintable = gtk::WidgetPaintable::new(Some(&state.conversation));
+    let snapshot = gtk::Snapshot::new();
+    paintable.snapshot(
+        &snapshot,
+        state.conversation.width() as f64,
+        state.conversation.height() as f64,
+    );
+    state
+        .window
+        .renderer()
+        .unwrap()
+        .render_texture(&snapshot.to_node().unwrap(), None)
+        .save_to_png("/tmp/line-gtk-flex-chat.png")
+        .unwrap();
+    state.window.close();
+    let _ = std::fs::remove_dir_all(temp);
+}

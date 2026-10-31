@@ -5,6 +5,15 @@ import { join } from "@std/path";
 
 type Json = Record<string, unknown>;
 
+export const FLEX_METADATA_VERSION = 1;
+
+export function needsFlexMetadataRefresh(messages: Json[]): boolean {
+  return messages.some((message) =>
+    message.contentType === "FLEX" &&
+    message.flexMetadataVersion !== FLEX_METADATA_VERSION
+  );
+}
+
 export type MessageViewRuntime = {
   normType: (value: unknown) => string;
   existingFullImage: (id: string) => Promise<string | null>;
@@ -88,7 +97,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
   }
 
   function extractFlex(meta: Record<string, string>): Json | null {
-    const altText = meta.ALT_TEXT || "";
+    let altText = meta.ALT_TEXT || "";
     let root: unknown = null;
     if (meta.FLEX_JSON) {
       try {
@@ -97,6 +106,16 @@ export function createMessageView(runtime: MessageViewRuntime) {
         root = null;
       }
     }
+    if (
+      root && typeof root === "object" && "type" in root && root.type === "flex"
+    ) {
+      if (!altText && "altText" in root && typeof root.altText === "string") {
+        altText = root.altText;
+      }
+      root = "contents" in root ? root.contents : null;
+    }
+    const hasContents = root && typeof root === "object" && "type" in root &&
+      ["bubble", "carousel", "box"].includes(String(root.type));
     const texts: string[] = [];
     const actions: Json[] = [];
     const seen = new Set<string>();
@@ -111,13 +130,17 @@ export function createMessageView(runtime: MessageViewRuntime) {
       const o = node as Record<string, unknown>;
       if (typeof o.text === "string" && o.text.trim()) {
         const t = o.text.trim();
-        if (texts.length < 12 && !texts.includes(t)) texts.push(t);
+        if (!texts.includes(t)) texts.push(t);
       }
       if (o.action && typeof o.action === "object") {
         const a = o.action as Record<string, unknown>;
         const label = String(a.label || o.text || a.data || a.uri || "Action");
         const kind = String(a.type || "postback").toLowerCase();
-        const data = a.data != null ? String(a.data) : null;
+        const data = a.text != null && kind === "message"
+          ? String(a.text)
+          : a.data != null
+          ? String(a.data)
+          : null;
         const uri = a.uri != null
           ? String(a.uri)
           : (a.url != null ? String(a.url) : null);
@@ -131,11 +154,14 @@ export function createMessageView(runtime: MessageViewRuntime) {
     };
     walk(root);
 
-    if (!altText && !texts.length && !actions.length) return null;
+    if (!altText && !texts.length && !actions.length && !hasContents) {
+      return null;
+    }
     return {
       altText: altText || texts[0] || "Flex message",
-      texts: texts.slice(0, 8),
+      texts,
       actions,
+      contents: root,
     };
   }
 

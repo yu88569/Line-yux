@@ -4,6 +4,13 @@ pub(super) fn message_list_fingerprint(messages: &[MessageInfo]) -> (usize, Stri
     let first = messages.first().map(|m| m.id.clone()).unwrap_or_default();
     let mut last = messages.last().map(|m| m.id.clone()).unwrap_or_default();
     for message in messages {
+        if let Some(flex) = &message.flex {
+            last.push_str(&format!(
+                "|flex:{}:{}",
+                message.id,
+                serde_json::to_string(flex).unwrap_or_default()
+            ));
+        }
         for reaction in &message.reactions {
             last.push_str(&format!(
                 "|reaction:{}:{}:{}",
@@ -1219,6 +1226,21 @@ pub(super) fn append_flex_card(
     msg: &MessageInfo,
     flex: &crate::protocol::FlexInfo,
 ) {
+    if let Some(contents) = &flex.contents {
+        let state = state.clone();
+        let msg_id = msg.id.clone();
+        let chat = state.current_chat.borrow().clone().unwrap_or_default();
+        if let Some(card) = super::flex::render(
+            contents,
+            std::rc::Rc::new(move |action| {
+                handle_flex_action(&state, &chat, &msg_id, &action);
+            }),
+        ) {
+            bubble.add_css_class("line-bubble-flex");
+            bubble.append(&card);
+            return;
+        }
+    }
     let card = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(6)
@@ -1241,7 +1263,7 @@ pub(super) fn append_flex_card(
                 .build(),
         );
     }
-    for t in flex.texts.iter().take(6) {
+    for t in flex.texts.iter() {
         if *t == title {
             continue;
         }
@@ -1701,6 +1723,23 @@ mod reaction_tests {
         )
         .unwrap();
         assert_eq!(new.reactions[0].kind, 3);
+        assert_ne!(
+            message_list_fingerprint(&[old]),
+            message_list_fingerprint(&[new])
+        );
+    }
+}
+
+#[cfg(test)]
+mod flex_refresh_tests {
+    use super::*;
+    #[test]
+    fn refreshed_flex_tree_updates_existing_cached_message() {
+        let old: MessageInfo = serde_json::from_value(serde_json::json!({"id":"42", "contentType":"FLEX", "flex":{"altText":"Schedule","texts":["Schedule"]}})).unwrap();
+        let mut new = old.clone();
+        new.flex.as_mut().unwrap().contents = Some(
+            serde_json::json!({"type":"bubble","body":{"type":"box","contents":[{"type":"text","text":"Schedule"}]}}),
+        );
         assert_ne!(
             message_list_fingerprint(&[old]),
             message_list_fingerprint(&[new])
