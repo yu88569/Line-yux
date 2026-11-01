@@ -860,57 +860,16 @@ export function createCommandService(runtime: CommandRuntime) {
       | { id?: unknown; createdTime?: unknown; contentType?: unknown }
       | null = null;
 
-    // Prefer plain first (avoids e2ee contentMetadata crashes on some peers), then e2ee.
     try {
       sent = await client.base.talk.sendMessage({
         to: chatMid,
         text,
-        e2ee: false,
+        e2ee: true,
         ...relation,
       }) as unknown as typeof sent;
-    } catch (e1) {
-      try {
-        sent = await client.base.talk.sendMessage({
-          to: chatMid,
-          text,
-          e2ee: true,
-          ...relation,
-        }) as unknown as typeof sent;
-      } catch (e2) {
-        try {
-          const chat = await client.getChat(chatMid);
-          const m = await chat.sendMessage({ text, ...relation });
-          const summary = await summarizeTalkMessage(m, { withMedia: false })
-            .catch(() =>
-              sentMessagePayload(
-                {
-                  id: (m as { raw?: { id?: unknown } }).raw?.id,
-                  createdTime: Date.now(),
-                },
-                chatMid,
-                text,
-              )
-            );
-          const message = { ...summary, ...(reply ? { reply } : {}) };
-          msgCache.delete(chatMid);
-          runtime.setChatCache(null);
-          touchChatPreviewFromMessage(message);
-          ok(id, { message });
-          return;
-        } catch (e3) {
-          fail(
-            id,
-            e3 instanceof Error
-              ? e3.message
-              : e2 instanceof Error
-              ? e2.message
-              : e1 instanceof Error
-              ? e1.message
-              : String(e1),
-          );
-          return;
-        }
-      }
+    } catch (error) {
+      fail(id, error instanceof Error ? error.message : String(error));
+      return;
     }
 
     msgCache.delete(chatMid);

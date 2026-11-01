@@ -41,64 +41,33 @@ Deno.test("reply boundary rejects cross-chat and temporary targets", () => {
     undefined,
   );
 });
-for (const successAt of [0, 1, 2, 3]) {
-  Deno.test(`reply native relation survives fallback ${successAt}`, async () => {
-    const calls: Record<string, unknown>[] = [];
-    const outcomes: unknown[] = [];
-    const sender = (input: Record<string, unknown>) => {
-      const attempt = calls.length;
-      calls.push(input);
-      if (attempt < successAt) return Promise.reject(Error("failed"));
-      return Promise.resolve({ id: "123", raw: { id: "123" } });
-    };
-    const runtime = {
-      getClient: () => ({
-        base: { talk: { sendMessage: sender } },
-        getChat: () => Promise.resolve({ sendMessage: sender }),
-      }),
-      msgCache: new Map(),
-      setChatCache: () => {},
-      summarizeTalkMessage: () => Promise.resolve({ id: "123" }),
-      sentMessagePayload: () => ({ id: "123" }),
-      touchChatPreviewFromMessage: () => {},
-      ok: (_: unknown, result: unknown) => outcomes.push(result),
-      fail: (_: unknown, error: unknown) => outcomes.push(error),
-    } as unknown as CommandRuntime;
-    await createCommandService(runtime).sendMessage(1, "c123", "answer", reply);
-    assertEquals(calls.length, Math.min(successAt + 1, 3));
-    for (const call of calls) {
-      assertEquals(call.relatedMessageId, reply.id);
-      assertEquals(call.text, "answer");
-    }
-    if (successAt < 3) {
-      assertEquals(
-        (outcomes[0] as { message: { reply: unknown } }).message.reply,
-        reply,
-      );
-    } else assertEquals(outcomes, ["failed"]);
-  });
-}
-Deno.test("reply persists when chat summary falls back", async () => {
-  let result: unknown;
+Deno.test("reply preserves its relation when sent with E2EE", async () => {
+  const calls: unknown[] = [];
+  const outcomes: unknown[] = [];
   const runtime = {
     getClient: () => ({
-      base: { talk: { sendMessage: () => Promise.reject(Error("base")) } },
-      getChat: () =>
-        Promise.resolve({
-          sendMessage: () => Promise.resolve({ raw: { id: "123" } }),
-        }),
+      base: {
+        talk: {
+          sendMessage: (input: unknown) => {
+            calls.push(input);
+            return Promise.resolve({ id: "123" });
+          },
+        },
+      },
     }),
     msgCache: new Map(),
     setChatCache: () => {},
-    summarizeTalkMessage: () => Promise.reject(Error("summary")),
     sentMessagePayload: () => ({ id: "123" }),
     touchChatPreviewFromMessage: () => {},
-    ok: (_: unknown, r: unknown) => result = r,
-    fail: () => {},
+    ok: (_: unknown, result: unknown) => outcomes.push(result),
+    fail: (_: unknown, error: unknown) => outcomes.push(error),
   } as unknown as CommandRuntime;
   await createCommandService(runtime).sendMessage(1, "c123", "answer", reply);
-  assertEquals(
-    (result as { message: { reply: unknown } }).message.reply,
-    reply,
-  );
+  assertEquals(calls, [{
+    to: "c123",
+    text: "answer",
+    e2ee: true,
+    relatedMessageId: reply.id,
+  }]);
+  assertEquals(outcomes, [{ message: { id: "123", reply } }]);
 });
