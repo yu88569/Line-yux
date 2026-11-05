@@ -191,6 +191,109 @@ fn chat_fixture(name: &str, application_id: &str) -> (PathBuf, PathBuf, Applicat
 
 #[test]
 #[ignore = "requires a GTK display"]
+fn gtk_chat_switch_loading_has_static_label_without_spinner() {
+    let (temp, data, _app, mut state) = chat_fixture(
+        "chat-switch-loading",
+        "dev.linegtk.ChatSwitchLoadingFixture",
+    );
+    std::fs::write(
+        temp.join("protocol/line-gtk-protocol"),
+        "#!/bin/sh\ncat >/dev/null\n",
+    )
+    .unwrap();
+    state.sidecar = Rc::new(Sidecar::spawn(&temp, &data).unwrap());
+    *state.session_ready.borrow_mut() = true;
+    state.config.borrow_mut().animations = true;
+    apply_ui_motion(&state);
+    wire_scroll_pin(&state);
+    assert_eq!(
+        state.msg_stack.transition_type(),
+        gtk::StackTransitionType::None
+    );
+    state.stack.set_visible_child_name("shell");
+    state.window.set_default_size(1000, 700);
+    state.window.present();
+
+    let messages = |mid: &str| {
+        (0..60)
+            .map(|index| {
+                serde_json::from_value::<MessageInfo>(serde_json::json!({
+                    "id": format!("{mid}-{index}"),
+                    "from": mid,
+                    "text": format!("Loaded message {index}"),
+                    "contentType": "NONE",
+                    "createdTime": 1700000000000_i64 + index
+                }))
+                .unwrap()
+            })
+            .collect()
+    };
+
+    for mid in [
+        "u11111111111111111111111111111111",
+        "u22222222222222222222222222222222",
+    ] {
+        open_chat(&state, &chat(mid, 1));
+        assert_eq!(
+            state.msg_stack.visible_child_name().as_deref(),
+            Some("loading")
+        );
+        let loading = state.msg_stack.visible_child().unwrap();
+        let widgets = descendants(&loading);
+        assert!(widgets.iter().any(|widget| {
+            widget
+                .downcast_ref::<gtk::Label>()
+                .is_some_and(|label| label.text() == crate::i18n::t("loading_messages"))
+        }));
+        assert!(!widgets.iter().any(|widget| widget.is::<gtk::Spinner>()));
+
+        apply_messages(&state, messages(mid));
+        assert_eq!(state.message_scroll.opacity(), 0.0);
+        wait_for(|| !state.history.borrow().rendering);
+        assert_eq!(state.message_scroll.opacity(), 0.0);
+        wait_for(|| state.message_scroll.opacity() == 1.0);
+        let adj = state.message_scroll.vadjustment();
+        assert!(adj.upper() > adj.page_size());
+        assert!((adj.value() - (adj.upper() - adj.page_size())).abs() <= 1.0);
+        let visible_position = adj.value();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        while std::time::Instant::now() < deadline {
+            drain();
+            assert!((adj.value() - visible_position).abs() <= 1.0);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    open_chat(&state, &chat("u-rapid-first", 1));
+    apply_messages(&state, messages("u-rapid-first"));
+    assert_eq!(state.message_scroll.opacity(), 0.0);
+    wait_for(|| !state.history.borrow().rendering);
+    assert_eq!(state.message_scroll.opacity(), 0.0);
+    open_chat(&state, &chat("u-rapid-second", 2));
+    drain();
+    assert_eq!(
+        state.msg_stack.visible_child_name().as_deref(),
+        Some("loading")
+    );
+    assert_eq!(state.message_scroll.opacity(), 1.0);
+    assert!(state.message_list.rows().is_empty());
+    apply_messages(&state, messages("u-rapid-second"));
+    assert_eq!(state.message_scroll.opacity(), 0.0);
+    wait_for(|| state.message_scroll.opacity() == 1.0);
+    assert!(
+        state
+            .seen_msg_ids
+            .borrow()
+            .iter()
+            .all(|id| id.starts_with("u-rapid-second"))
+    );
+
+    state.window.close();
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+#[ignore = "requires a GTK display"]
 fn gtk_chat_updates_preserve_typing_focus_and_draft() {
     let (temp, _, _app, state) = chat_fixture("typing-focus", "dev.linegtk.TypingFocusFixture");
     *state.restored_last_chat.borrow_mut() = true;

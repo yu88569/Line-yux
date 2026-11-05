@@ -60,6 +60,8 @@ pub(super) fn apply_messages_preserving_scroll(state: &AppState, messages: Vec<M
 }
 
 fn apply_messages_inner(state: &AppState, messages: Vec<MessageInfo>, preserve_scroll: bool) {
+    let opening_chat = state.msg_stack.visible_child_name().as_deref() == Some("loading")
+        || state.message_scroll.opacity() == 0.0;
     history::ensure_chat(state);
     let mut messages = history::merge_current(state, messages);
     history::release_anchor(state);
@@ -130,6 +132,10 @@ fn apply_messages_inner(state: &AppState, messages: Vec<MessageInfo>, preserve_s
 
     // Append in idle chunks so image-heavy threads don't freeze the window.
     let total = messages.len();
+    if opening_chat {
+        // Keep GTK allocating rows while the initial bottom position settles out of sight.
+        state.message_scroll.set_opacity(0.0);
+    }
     set_msg_state(state, "list", None);
     state.chat_subtitle.set_text(&crate::i18n::tf(
         "messages_count",
@@ -169,6 +175,7 @@ fn apply_messages_inner(state: &AppState, messages: Vec<MessageInfo>, preserve_s
                         *restore.stick_bottom.borrow_mut() = false;
                         *restore.scroll_pinning.borrow_mut() = false;
                         restore.history.borrow_mut().rendering = false;
+                        restore.message_scroll.set_opacity(1.0);
                     }
                 });
             } else {
@@ -1456,8 +1463,10 @@ pub(super) fn set_msg_state(state: &AppState, name: &str, empty_text: Option<&st
     if let Some(text) = empty_text {
         state.msg_empty.set_text(text);
     }
-    if name == "loading" {
-        state.msg_spinner.set_spinning(true);
+    if name != "list" {
+        *state.scroll_pin_gen.borrow_mut() += 1;
+        *state.scroll_pinning.borrow_mut() = false;
+        state.message_scroll.set_opacity(1.0);
     }
     state.msg_stack.set_visible_child_name(name);
 }
@@ -1567,6 +1576,7 @@ pub(super) fn scroll_last_row_into_view(state: &AppState) {
 
 pub(super) fn scroll_messages_to_end(state: &AppState) {
     if !*state.stick_bottom.borrow() {
+        state.message_scroll.set_opacity(1.0);
         return;
     }
     // Supersede any previous pin chain — overlapping clears were leaving stick=false
@@ -1580,16 +1590,22 @@ pub(super) fn scroll_messages_to_end(state: &AppState) {
     state.message_list.queue_allocate();
 
     let state_c = state.clone();
+    let chat_mid = state.current_chat.borrow().clone();
+    let history_generation = state.history.borrow().generation;
     let step = Rc::new(RefCell::new(None::<Rc<dyn Fn(u32)>>));
     let step_fn = {
         let step = step.clone();
         let state_c = state_c.clone();
         Rc::new(move |attempt: u32| {
-            if *state_c.scroll_pin_gen.borrow() != pin_gen {
+            if *state_c.scroll_pin_gen.borrow() != pin_gen
+                || *state_c.current_chat.borrow() != chat_mid
+                || state_c.history.borrow().generation != history_generation
+            {
                 return;
             }
             if !*state_c.stick_bottom.borrow() {
                 *state_c.scroll_pinning.borrow_mut() = false;
+                state_c.message_scroll.set_opacity(1.0);
                 return;
             }
             *state_c.scroll_pinning.borrow_mut() = true;
@@ -1609,12 +1625,18 @@ pub(super) fn scroll_messages_to_end(state: &AppState) {
                     snap_adj_to_bottom(&adj);
                     *state_c.scroll_pinning.borrow_mut() = false;
                 }
+                if !state_c.history.borrow().rendering {
+                    state_c.message_scroll.set_opacity(1.0);
+                }
                 return;
             }
             if at_bottom && attempt >= 12 {
                 // One more settle pass on the next ticks, then release.
                 if attempt >= 18 {
                     *state_c.scroll_pinning.borrow_mut() = false;
+                    if !state_c.history.borrow().rendering {
+                        state_c.message_scroll.set_opacity(1.0);
+                    }
                     return;
                 }
             }

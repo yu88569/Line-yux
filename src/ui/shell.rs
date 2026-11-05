@@ -31,7 +31,6 @@ pub struct ShellWidgets {
     pub side_empty: gtk::Label,
     pub side_load_label: gtk::Label,
     pub msg_stack: gtk::Stack,
-    pub msg_spinner: gtk::Spinner,
     pub msg_empty: gtk::Label,
     pub msg_load_label: gtk::Label,
     pub msg_idle: gtk::Label,
@@ -308,8 +307,8 @@ pub fn build_shell_page() -> ShellWidgets {
     let msg_stack = gtk::Stack::builder()
         .vexpand(true)
         .hexpand(true)
-        .transition_type(gtk::StackTransitionType::Crossfade)
-        .transition_duration(160)
+        .transition_type(gtk::StackTransitionType::None)
+        .transition_duration(0)
         .build();
 
     let message_scroll = gtk::ScrolledWindow::builder()
@@ -327,13 +326,10 @@ pub fn build_shell_page() -> ShellWidgets {
         .valign(gtk::Align::Center)
         .halign(gtk::Align::Center)
         .build();
-    let msg_spinner = gtk::Spinner::builder().spinning(true).build();
-    msg_spinner.set_size_request(32, 32);
     let msg_load_label = gtk::Label::builder()
         .label(crate::i18n::t("loading_messages"))
         .css_classes(["dim-label"])
         .build();
-    msg_loading.append(&msg_spinner);
     msg_loading.append(&msg_load_label);
 
     let msg_empty = gtk::Label::builder()
@@ -601,7 +597,6 @@ pub fn build_shell_page() -> ShellWidgets {
         side_empty,
         side_load_label,
         msg_stack,
-        msg_spinner,
         msg_empty,
         msg_load_label,
         msg_idle,

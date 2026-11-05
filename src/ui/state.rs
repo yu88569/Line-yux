@@ -66,7 +66,6 @@ pub(super) struct AppState {
     pub side_empty: gtk::Label,
     pub side_load_label: gtk::Label,
     pub msg_stack: gtk::Stack,
-    pub msg_spinner: gtk::Spinner,
     pub msg_empty: gtk::Label,
     pub msg_load_label: gtk::Label,
     pub msg_idle: gtk::Label,

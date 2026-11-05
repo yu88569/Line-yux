@@ -173,7 +173,6 @@ fn build_state(
         side_empty: shell.side_empty,
         side_load_label: shell.side_load_label,
         msg_stack: shell.msg_stack,
-        msg_spinner: shell.msg_spinner,
         msg_empty: shell.msg_empty,
         msg_load_label: shell.msg_load_label,
         msg_idle: shell.msg_idle,
@@ -896,8 +895,10 @@ fn apply_ui_motion(state: &AppState) {
     // Keep boot→shell instant until logged in; only animate shell sub-stacks here.
     state.side_stack.set_transition_type(stack_ty);
     state.side_stack.set_transition_duration(stack_ms);
-    state.msg_stack.set_transition_type(stack_ty);
-    state.msg_stack.set_transition_duration(stack_ms);
+    state
+        .msg_stack
+        .set_transition_type(gtk::StackTransitionType::None);
+    state.msg_stack.set_transition_duration(0);
 
     let (rev_ty, rev_ms) = if on {
         (gtk::RevealerTransitionType::SlideUp, 180)
@@ -943,6 +944,12 @@ fn wire_scroll_pin(state: &AppState) {
         gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::KINETIC,
     );
     wheel.connect_scroll(move |_, _dx, dy| {
+        if dy < -0.1 && s_scroll.message_scroll.opacity() == 0.0 {
+            *s_scroll.scroll_pin_gen.borrow_mut() += 1;
+            *s_scroll.scroll_pinning.borrow_mut() = false;
+            *s_scroll.stick_bottom.borrow_mut() = false;
+            s_scroll.message_scroll.set_opacity(1.0);
+        }
         if *s_scroll.scroll_pinning.borrow() {
             return glib::Propagation::Proceed;
         }
