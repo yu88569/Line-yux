@@ -15,6 +15,25 @@ struct AlbumItem {
     download: Download,
     picture: gtk::Picture,
     button: gtk::Button,
+    check: gtk::CheckButton,
+}
+
+#[derive(Default)]
+enum Selection {
+    #[default]
+    Off,
+    Picking {
+        ids: HashSet<String>,
+        all_pages: bool,
+    },
+}
+
+#[derive(Default, PartialEq, Eq)]
+enum BatchState {
+    #[default]
+    Idle,
+    ChoosingFolder,
+    Saving,
 }
 
 #[derive(Default)]
@@ -23,6 +42,8 @@ struct AlbumModel {
     cursor: Option<String>,
     visited: HashSet<String>,
     page: PageState,
+    selection: Selection,
+    batch: BatchState,
 }
 
 #[derive(Default, PartialEq, Eq)]
@@ -35,6 +56,36 @@ enum PageState {
 }
 
 impl AlbumModel {
+    fn selected_files(&self) -> Option<Vec<(String, String)>> {
+        let Selection::Picking { ids, all_pages } = &self.selection else {
+            return None;
+        };
+        if ids.is_empty() || (*all_pages && self.page != PageState::Exhausted) {
+            return None;
+        }
+        self.items
+            .iter()
+            .filter(|item| ids.contains(&item.photo.oid))
+            .map(|item| {
+                if let Download::Ready(path) = &item.download {
+                    Some((item.photo.oid.clone(), path.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn selecting_all(&self) -> bool {
+        matches!(
+            self.selection,
+            Selection::Picking {
+                all_pages: true,
+                ..
+            }
+        )
+    }
+
     fn images(&self) -> Vec<usize> {
         self.items
             .iter()
@@ -98,6 +149,12 @@ pub(super) struct AlbumGallery {
     grid: gtk::FlowBox,
     status: gtk::Label,
     more: gtk::Button,
+    select: gtk::Button,
+    selection_bar: gtk::Box,
+    select_all: gtk::Button,
+    copy: gtk::Button,
+    save: gtk::Button,
+    selection_status: gtk::Label,
     model: Rc<RefCell<AlbumModel>>,
     viewer: Rc<RefCell<Option<AlbumViewer>>>,
 }
@@ -153,9 +210,22 @@ pub(super) fn open_album(state: &AppState, album: &AlbumRef) {
             window.close();
         }
     });
+    let select = gtk::Button::with_label(&crate::i18n::t("album_select"));
     header.append(&title);
+    header.append(&select);
     header.append(&close);
     root.append(&header);
+    let selection_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let select_all = gtk::Button::with_label(&crate::i18n::t("album_select_all"));
+    let copy = gtk::Button::with_label(&crate::i18n::t("album_copy"));
+    let save = gtk::Button::with_label(&crate::i18n::t("album_download"));
+    selection_bar.append(&select_all);
+    selection_bar.append(&copy);
+    selection_bar.append(&save);
+    selection_bar.set_visible(false);
+    root.append(&selection_bar);
+    let selection_status = gtk::Label::builder().wrap(true).visible(false).build();
+    root.append(&selection_status);
     let grid = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .min_children_per_line(2)
@@ -180,14 +250,299 @@ pub(super) fn open_album(state: &AppState, album: &AlbumRef) {
         grid,
         status,
         more,
+        select,
+        selection_bar,
+        select_all,
+        copy,
+        save,
+        selection_status,
         model: Rc::new(RefCell::new(AlbumModel::default())),
         viewer: Rc::new(RefCell::new(None)),
     };
     let s = state.clone();
     let ui2 = ui.clone();
     ui.more.connect_clicked(move |_| request_page(&s, &ui2));
+    let ui2 = ui.clone();
+    ui.select.connect_clicked(move |_| {
+        {
+            let mut model = ui2.model.borrow_mut();
+            model.selection = if matches!(model.selection, Selection::Off) {
+                Selection::Picking {
+                    ids: HashSet::new(),
+                    all_pages: false,
+                }
+            } else {
+                Selection::Off
+            };
+        }
+        refresh_selection(&ui2);
+    });
+    let s = state.clone();
+    let ui2 = ui.clone();
+    ui.select_all
+        .connect_clicked(move |_| select_all_photos(&s, &ui2));
+    let s = state.clone();
+    let ui2 = ui.clone();
+    ui.copy.connect_clicked(move |_| copy_selected(&s, &ui2));
+    let s = state.clone();
+    let ui2 = ui.clone();
+    ui.save.connect_clicked(move |_| save_selected(&s, &ui2));
     ui.window.present();
     request_page(state, &ui);
+}
+
+fn refresh_selection(ui: &AlbumGallery) {
+    let model = ui.model.borrow();
+    let picking = matches!(model.selection, Selection::Picking { .. });
+    let busy = model.batch != BatchState::Idle;
+    let (count, waiting, failed) = if let Selection::Picking { ids, .. } = &model.selection {
+        let selected = model.items.iter().filter(|i| ids.contains(&i.photo.oid));
+        (
+            ids.len(),
+            selected
+                .clone()
+                .filter(|i| i.download == Download::Loading)
+                .count(),
+            selected
+                .filter(|i| matches!(i.download, Download::Failed(_)))
+                .count(),
+        )
+    } else {
+        (0, 0, 0)
+    };
+    let ready = model.selected_files().is_some() && !busy;
+    let page_wait = model.selecting_all() && model.page != PageState::Exhausted;
+    let page_failed = model.selecting_all() && matches!(model.page, PageState::Failed(_));
+    let checks = model.items.iter().map(|i| {
+        let active = matches!(&model.selection, Selection::Picking { ids, .. } if ids.contains(&i.photo.oid));
+        (i.check.clone(), picking && i.photo.kind == AlbumMediaKind::Image, active)
+    }).collect::<Vec<_>>();
+    drop(model);
+    ui.select.set_label(&crate::i18n::t(if picking {
+        "album_cancel"
+    } else {
+        "album_select"
+    }));
+    ui.select.set_sensitive(!busy);
+    ui.selection_bar.set_visible(picking);
+    ui.selection_status.set_visible(picking);
+    ui.select_all.set_sensitive(!busy);
+    ui.copy.set_sensitive(ready);
+    ui.save.set_sensitive(ready);
+    let key = if busy {
+        "album_saving"
+    } else if page_failed {
+        "album_selection_page_failed"
+    } else if failed > 0 {
+        "album_selection_failed"
+    } else if page_wait || waiting > 0 {
+        "album_selection_loading"
+    } else {
+        "album_selected_count"
+    };
+    ui.selection_status.set_text(&crate::i18n::tf(
+        key,
+        &[
+            ("count", &count.to_string()),
+            ("failed", &failed.to_string()),
+        ],
+    ));
+    for (check, visible, active) in checks {
+        check.set_visible(visible);
+        check.set_sensitive(!busy);
+        check.set_active(active);
+    }
+}
+
+fn select_all_photos(state: &AppState, ui: &AlbumGallery) {
+    {
+        let mut model = ui.model.borrow_mut();
+        if model.batch != BatchState::Idle || matches!(model.selection, Selection::Off) {
+            return;
+        }
+        let ids = model
+            .items
+            .iter()
+            .filter(|i| i.photo.kind == AlbumMediaKind::Image)
+            .map(|i| i.photo.oid.clone())
+            .collect();
+        model.selection = Selection::Picking {
+            ids,
+            all_pages: true,
+        };
+    }
+    refresh_selection(ui);
+    if ui.model.borrow().page != PageState::Exhausted {
+        request_page(state, ui);
+    }
+}
+
+fn copy_selected(state: &AppState, ui: &AlbumGallery) {
+    let files = {
+        let model = ui.model.borrow();
+        if model.batch != BatchState::Idle {
+            return;
+        }
+        let Some(files) = model.selected_files() else {
+            return;
+        };
+        files
+    };
+    if files
+        .iter()
+        .any(|(_, path)| !std::path::Path::new(path).is_file())
+    {
+        toast(state, &crate::i18n::t("album_files_missing"));
+        return;
+    }
+    let list = gdk::FileList::from_array(
+        &files
+            .iter()
+            .map(|(_, path)| gio::File::for_path(path))
+            .collect::<Vec<_>>(),
+    );
+    let provider = gdk::ContentProvider::for_value(&list.to_value());
+    match ui.window.clipboard().set_content(Some(&provider)) {
+        Ok(()) => toast(
+            state,
+            &crate::i18n::tf("album_copied", &[("count", &files.len().to_string())]),
+        ),
+        Err(error) => toast(state, &error.to_string()),
+    }
+}
+
+fn save_selected(state: &AppState, ui: &AlbumGallery) {
+    let files = {
+        let model = ui.model.borrow();
+        if model.batch != BatchState::Idle {
+            return;
+        }
+        let Some(files) = model.selected_files() else {
+            return;
+        };
+        files
+    };
+    let dir = state.config.borrow().download_dir_for("IMAGE");
+    if !state.config.borrow().download_ask_every_time {
+        save_batch(state, ui, files, dir);
+        return;
+    }
+    ui.model.borrow_mut().batch = BatchState::ChoosingFolder;
+    refresh_selection(ui);
+    let dialog = gtk::FileDialog::builder()
+        .title(crate::i18n::t("album_download_folder"))
+        .modal(true)
+        .build();
+    if dir.is_dir() {
+        dialog.set_initial_folder(Some(&gio::File::for_path(dir)));
+    }
+    let s = state.clone();
+    let ui2 = ui.clone();
+    dialog.select_folder(Some(&ui.window), None::<&gio::Cancellable>, move |result| {
+        ui2.model.borrow_mut().batch = BatchState::Idle;
+        if ui2.window.is_visible() {
+            match result {
+                Ok(folder) => {
+                    if let Some(dir) = folder.path() {
+                        save_batch(&s, &ui2, files, dir);
+                    } else {
+                        toast(&s, &crate::i18n::t("media_download_failed"));
+                    }
+                }
+                Err(error)
+                    if error.matches(gtk::DialogError::Dismissed)
+                        || error.matches(gtk::DialogError::Cancelled) => {}
+                Err(error) => toast(&s, &error.to_string()),
+            }
+        }
+        refresh_selection(&ui2);
+    });
+}
+
+fn save_batch(state: &AppState, ui: &AlbumGallery, files: Vec<(String, String)>, dir: PathBuf) {
+    ui.model.borrow_mut().batch = BatchState::Saving;
+    refresh_selection(ui);
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = sender.send_blocking(copy_batch_files(&files, &dir));
+    });
+    let s = state.clone();
+    let ui2 = ui.clone();
+    glib::spawn_future_local(async move {
+        if let Ok((saved, errors)) = receiver.recv().await {
+            ui2.model.borrow_mut().batch = BatchState::Idle;
+            refresh_selection(&ui2);
+            let message = if errors.is_empty() {
+                crate::i18n::tf("album_saved", &[("count", &saved.to_string())])
+            } else {
+                crate::i18n::tf(
+                    "album_save_failed",
+                    &[
+                        ("count", &saved.to_string()),
+                        ("failed", &errors.len().to_string()),
+                        ("error", &errors[0]),
+                    ],
+                )
+            };
+            toast(&s, &message);
+            if ui2.window.is_visible() {
+                ui2.status.set_text(&message);
+            }
+        }
+    });
+}
+
+fn copy_batch_files(files: &[(String, String)], dir: &std::path::Path) -> (usize, Vec<String>) {
+    let mut saved = 0;
+    let mut errors = Vec::new();
+    if let Err(error) = std::fs::create_dir_all(dir) {
+        return (0, files.iter().map(|_| error.to_string()).collect());
+    }
+    for (oid, path) in files {
+        let result = (|| -> std::io::Result<()> {
+            let mut source = std::fs::File::open(path)?;
+            let extension = std::path::Path::new(path)
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("jpg");
+            let name = downloads::sanitize_filename(&format!("{oid}.{extension}"));
+            let stem = std::path::Path::new(&name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("photo");
+            for sequence in 0..10_000 {
+                let destination = dir.join(if sequence == 0 {
+                    name.clone()
+                } else {
+                    format!("{stem}-{sequence}.{extension}")
+                });
+                let mut output = match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&destination)
+                {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error),
+                };
+                if let Err(error) = std::io::copy(&mut source, &mut output) {
+                    drop(output);
+                    let _ = std::fs::remove_file(&destination);
+                    return Err(error);
+                }
+                return Ok(());
+            }
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "No unused album filename",
+            ))
+        })();
+        match result {
+            Ok(()) => saved += 1,
+            Err(error) => errors.push(format!("{oid}: {error}")),
+        }
+    }
+    (saved, errors)
 }
 
 fn request_page(state: &AppState, ui: &AlbumGallery) {
@@ -199,6 +554,7 @@ fn request_page(state: &AppState, ui: &AlbumGallery) {
         model.page = PageState::Loading;
     }
     ui.more.set_sensitive(false);
+    refresh_selection(ui);
     ui.status.set_text(&crate::i18n::t("album_loading"));
     let params = serde_json::json!({"chatMid": ui.album.chat_mid, "albumId": ui.album.album_id, "cursor": ui.model.borrow().cursor});
     match state.sidecar.request("list_album_photos", Some(params)) {
@@ -217,6 +573,7 @@ pub(super) fn page_failed(state: &AppState, ui: &AlbumGallery, error: &str) {
     ui.status.set_text(error);
     ui.more.set_label(&crate::i18n::t("album_retry"));
     ui.more.set_sensitive(true);
+    refresh_selection(ui);
     refresh_viewer(state, ui);
 }
 
@@ -241,6 +598,9 @@ pub(super) fn page_ready(state: &AppState, ui: &AlbumGallery, value: serde_json:
             .can_shrink(true)
             .build();
         tile.append(&picture);
+        let check = gtk::CheckButton::with_label(&crate::i18n::t("album_select"));
+        check.set_visible(false);
+        tile.append(&check);
         let button = gtk::Button::with_label(&crate::i18n::t("album_photo_open"));
         button.set_sensitive(false);
         tile.append(&button);
@@ -251,10 +611,32 @@ pub(super) fn page_ready(state: &AppState, ui: &AlbumGallery, value: serde_json:
             download: Download::Loading,
             picture: picture.clone(),
             button: button.clone(),
+            check: check.clone(),
         });
         let s = state.clone();
         let ui2 = ui.clone();
         button.connect_clicked(move |_| open_item(&s, &ui2, index));
+        let ui2 = ui.clone();
+        let oid = photo.oid.clone();
+        check.connect_toggled(move |check| {
+            {
+                let mut model = ui2.model.borrow_mut();
+                if let Selection::Picking { ids, all_pages } = &mut model.selection {
+                    if ids.contains(&oid) == check.is_active() {
+                        return;
+                    }
+                    *all_pages = false;
+                    if check.is_active() {
+                        ids.insert(oid.clone());
+                    } else {
+                        ids.remove(&oid);
+                    }
+                } else {
+                    return;
+                }
+            }
+            refresh_selection(&ui2);
+        });
         downloads.push((photo, picture, button));
     }
     let model = ui.model.borrow();
@@ -270,7 +652,25 @@ pub(super) fn page_ready(state: &AppState, ui: &AlbumGallery, value: serde_json:
     for (photo, picture, button) in downloads {
         request_photo(state, ui, &photo, &picture, &button);
     }
+    {
+        let mut model = ui.model.borrow_mut();
+        if model.selecting_all() {
+            let images = model
+                .items
+                .iter()
+                .filter(|i| i.photo.kind == AlbumMediaKind::Image)
+                .map(|i| i.photo.oid.clone())
+                .collect::<HashSet<_>>();
+            if let Selection::Picking { ids, .. } = &mut model.selection {
+                ids.extend(images);
+            }
+        }
+    }
+    refresh_selection(ui);
     refresh_viewer(state, ui);
+    if ui.model.borrow().selecting_all() && ui.model.borrow().page == PageState::Available {
+        request_page(state, ui);
+    }
 }
 
 fn request_photo(
@@ -290,6 +690,7 @@ fn request_photo(
         item.download = Download::Loading;
     }
     button.set_sensitive(false);
+    refresh_selection(ui);
     match state.sidecar.request("download_album_photo", Some(serde_json::json!({"chatMid":ui.album.chat_mid,"albumId":ui.album.album_id,"oid":photo.oid,"kind":photo.kind}))) {
         Ok(id) => { state.pending.borrow_mut().insert(id, Pending::AlbumPhoto { ui: ui.clone(), photo: photo.clone(), picture: pic.clone(), button: button.clone() }); }
         Err(e) => photo_failed(state, ui, photo, pic, button, &e.to_string()),
@@ -316,6 +717,7 @@ pub(super) fn photo_failed(
     button.set_label(&crate::i18n::t("album_retry"));
     button.set_tooltip_text(Some(error));
     button.set_sensitive(true);
+    refresh_selection(ui);
     refresh_viewer(state, ui);
 }
 
@@ -353,6 +755,7 @@ pub(super) fn photo_ready(
     button.set_label(&crate::i18n::t("album_photo_open"));
     button.set_tooltip_text(None);
     button.set_sensitive(true);
+    refresh_selection(ui);
     refresh_viewer(state, ui);
 }
 
@@ -618,6 +1021,44 @@ mod tests {
         assert!(model.page == PageState::Exhausted);
     }
 
+    #[test]
+    fn batch_download_preserves_bytes_names_and_existing_files_and_reports_errors() {
+        let temp = std::env::temp_dir().join(format!("line-album-batch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+        let source = temp.join("source.png");
+        std::fs::write(&source, b"original image bytes").unwrap();
+        let destination = temp.join("saved");
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(destination.join("photo.png"), b"existing").unwrap();
+        let files = vec![
+            ("photo".into(), source.to_str().unwrap().into()),
+            ("../photo".into(), source.to_str().unwrap().into()),
+            (
+                "missing".into(),
+                temp.join("missing.png").to_str().unwrap().into(),
+            ),
+        ];
+        let (saved, errors) = copy_batch_files(&files, &destination);
+        assert_eq!(saved, 2);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].starts_with("missing:"));
+        assert_eq!(
+            std::fs::read(destination.join("photo.png")).unwrap(),
+            b"existing"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("photo-1.png")).unwrap(),
+            b"original image bytes"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("_photo.png")).unwrap(),
+            b"original image bytes"
+        );
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 3);
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
     fn button_in(widget: &gtk::Widget, icon: &str) -> gtk::Button {
         fn find(widget: &gtk::Widget, icon: &str) -> Option<gtk::Button> {
             if let Ok(button) = widget.clone().downcast::<gtk::Button>()
@@ -804,8 +1245,16 @@ mod tests {
         ));
         press(&win, gdk::Key::Right, gdk::ModifierType::empty());
         assert_eq!(state.pending.borrow().len(), 1);
+        ui.select.emit_clicked();
+        assert!(ui.selection_bar.is_visible());
+        assert!(!ui.copy.is_sensitive());
+        ui.select_all.emit_clicked();
+        assert!(ui.model.borrow().selecting_all());
+        assert!(!ui.copy.is_sensitive());
         respond(&state, page_id, false, serde_json::Value::Null);
         assert_eq!(ui.status.text(), "Album offline");
+        assert!(!ui.copy.is_sensitive());
+        assert!(ui.model.borrow().selecting_all());
         let root = win.child().unwrap().downcast::<gtk::Box>().unwrap();
         let row = root.last_child().unwrap().downcast::<gtk::Box>().unwrap();
         row.last_child()
@@ -838,6 +1287,11 @@ mod tests {
         ], "nextCursor":"last"}),
         );
         assert_eq!(viewer.selected.get(), 2);
+        assert!(
+            matches!(&ui.model.borrow().selection, Selection::Picking { ids, .. } if ids.len() == 3)
+        );
+        assert!(!ui.copy.is_sensitive());
+        assert!(!ui.model.borrow().items[1].check.is_visible());
         assert_eq!(*viewer.rendered.borrow(), None);
         let pending_photo = |oid: &str| {
             *state
@@ -867,6 +1321,19 @@ mod tests {
             false,
             serde_json::Value::Null,
         );
+        assert!(!ui.copy.is_sensitive());
+        assert!(!ui.save.is_sensitive());
+        assert!(
+            state
+                .pending
+                .borrow()
+                .values()
+                .any(|p| matches!(p, Pending::AlbumPage(_)))
+        );
+        ui.select.emit_clicked();
+        assert!(!ui.model.borrow().selecting_all());
+        assert!(!ui.selection_bar.is_visible());
+
         let root = win.child().unwrap().downcast::<gtk::Box>().unwrap();
         let row = root.last_child().unwrap().downcast::<gtk::Box>().unwrap();
         assert_eq!(
@@ -949,6 +1416,71 @@ mod tests {
         assert!(ui.viewer.borrow().is_none());
         assert!(!ui.more.is_visible());
         assert_eq!(ui.model.borrow().items.len(), 4);
+        ui.select.emit_clicked();
+        let first = ui.model.borrow().items[0].check.clone();
+        first.set_active(true);
+        assert!(ui.copy.is_sensitive());
+        first.set_active(false);
+        assert!(!ui.copy.is_sensitive());
+        ui.select_all.emit_clicked();
+        assert!(ui.copy.is_sensitive());
+        ui.copy.emit_clicked();
+        let value = glib::MainContext::default()
+            .block_on(
+                ui.window
+                    .clipboard()
+                    .read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT),
+            )
+            .unwrap();
+        let copied = value.get::<gdk::FileList>().unwrap().files();
+        assert_eq!(
+            copied
+                .iter()
+                .map(|file| file.path().unwrap())
+                .collect::<Vec<_>>(),
+            vec![image.clone(), green.clone(), blue.clone()]
+        );
+        *state.current_chat.borrow_mut() = Some("album-paste".into());
+        assert!(composer_media::try_paste_clipboard_attachment(&state));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            drain();
+            if state
+                .attachment_drafts
+                .borrow()
+                .get("album-paste")
+                .is_some_and(|drafts| drafts.len() == 3)
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let destination = temp.join("batch-download");
+        state.config.borrow_mut().download_ask_every_time = false;
+        state.config.borrow_mut().download_dir_image = destination.to_str().unwrap().into();
+        ui.save.emit_clicked();
+        assert!(!ui.copy.is_sensitive());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while ui.model.borrow().batch != BatchState::Idle {
+            drain();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            std::fs::read(destination.join("photo.1.png")).unwrap(),
+            std::fs::read(&image).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(destination.join("photo.2.png")).unwrap(),
+            std::fs::read(&green).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(destination.join("photo.3.png")).unwrap(),
+            std::fs::read(&blue).unwrap()
+        );
+        ui.select.emit_clicked();
+        assert!(!ui.selection_bar.is_visible());
         let close = button_in(ui.window.upcast_ref(), "window-close-symbolic");
         assert!(close.is_visible());
         assert_eq!(
