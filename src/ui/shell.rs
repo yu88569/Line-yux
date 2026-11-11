@@ -1,5 +1,38 @@
 use gtk::prelude::*;
 
+fn message_skeleton() -> gtk::Box {
+    let column = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(20)
+        .margin_top(24)
+        .margin_start(24)
+        .margin_end(24)
+        .hexpand(true)
+        .vexpand(true)
+        .css_classes(["line-message-skeleton"])
+        .build();
+    for (right, width) in [
+        (false, 210),
+        (true, 160),
+        (false, 260),
+        (true, 200),
+        (false, 180),
+    ] {
+        let bubble = gtk::Box::builder()
+            .width_request(width)
+            .height_request(44)
+            .halign(if right {
+                gtk::Align::End
+            } else {
+                gtk::Align::Start
+            })
+            .css_classes(["line-skeleton-bubble"])
+            .build();
+        column.append(&bubble);
+    }
+    column
+}
+
 pub struct ShellWidgets {
     pub page: gtk::Box,
     pub chat_list: gtk::ListBox,
@@ -323,13 +356,15 @@ pub fn build_shell_page() -> ShellWidgets {
     let msg_loading = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(12)
-        .valign(gtk::Align::Center)
-        .halign(gtk::Align::Center)
+        .hexpand(true)
+        .vexpand(true)
         .build();
     let msg_load_label = gtk::Label::builder()
         .label(crate::i18n::t("loading_messages"))
         .css_classes(["dim-label"])
         .build();
+    let loading_skeleton = message_skeleton();
+    msg_loading.append(&loading_skeleton);
     msg_loading.append(&msg_load_label);
 
     let msg_empty = gtk::Label::builder()
@@ -346,7 +381,15 @@ pub fn build_shell_page() -> ShellWidgets {
 
     msg_stack.add_named(&msg_idle, Some("idle"));
     msg_stack.add_named(&msg_loading, Some("loading"));
-    msg_stack.add_named(&message_scroll, Some("list"));
+    let list_overlay = gtk::Overlay::new();
+    list_overlay.set_child(Some(&message_scroll));
+    let settling_skeleton = message_skeleton();
+    settling_skeleton.set_visible(false);
+    list_overlay.add_overlay(&settling_skeleton);
+    message_scroll.connect_opacity_notify(move |scroll| {
+        settling_skeleton.set_visible(scroll.opacity() == 0.0);
+    });
+    msg_stack.add_named(&list_overlay, Some("list"));
     msg_stack.add_named(&msg_empty, Some("empty"));
     msg_stack.set_visible_child_name("idle");
 
@@ -976,6 +1019,10 @@ pub fn load_css() {
         .line-flex-title { font-weight: 700; }
         .line-flex-action { margin-top: 4px; }
         .line-link-chip { margin-top: 4px; }
+        .line-skeleton-bubble {
+            background: alpha(currentColor, 0.10);
+            border-radius: 14px;
+        }
         .line-unread {
             background: @accent_bg_color;
             color: @accent_fg_color;

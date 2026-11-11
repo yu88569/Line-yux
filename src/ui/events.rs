@@ -265,7 +265,11 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         }
         ProtocolEvent::Messages { chat_mid, messages } => {
             if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str()) {
-                apply_messages(state, messages);
+                if !*state.stick_bottom.borrow() && state.message_scroll.opacity() != 0.0 {
+                    apply_messages_preserving_scroll(state, messages);
+                } else {
+                    apply_messages(state, messages);
+                }
             }
         }
         ProtocolEvent::AvatarReady { mid, avatar_path } => {
@@ -674,7 +678,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         history::update_status(state);
                     }
                     if !same_message_list(state, &chat_mid, &messages) {
-                        if !*state.stick_bottom.borrow() {
+                        if !*state.stick_bottom.borrow() && state.message_scroll.opacity() != 0.0 {
                             apply_messages_preserving_scroll(state, messages);
                         } else {
                             apply_messages(state, messages);

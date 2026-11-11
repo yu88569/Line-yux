@@ -229,11 +229,17 @@ fn gtk_chat_switch_loading_has_static_label_without_spinner() {
             .collect()
     };
 
+    let read_chat = |mid: &str, activity| {
+        let mut c = chat(mid, activity);
+        c.unread = 0;
+        c
+    };
+
     for mid in [
         "u11111111111111111111111111111111",
         "u22222222222222222222222222222222",
     ] {
-        open_chat(&state, &chat(mid, 1));
+        open_chat(&state, &read_chat(mid, 1));
         assert_eq!(
             state.msg_stack.visible_child_name().as_deref(),
             Some("loading")
@@ -246,6 +252,11 @@ fn gtk_chat_switch_loading_has_static_label_without_spinner() {
                 .is_some_and(|label| label.text() == crate::i18n::t("loading_messages"))
         }));
         assert!(!widgets.iter().any(|widget| widget.is::<gtk::Spinner>()));
+        assert!(
+            widgets
+                .iter()
+                .any(|widget| widget.has_css_class("line-message-skeleton"))
+        );
 
         apply_messages(&state, messages(mid));
         assert_eq!(state.message_scroll.opacity(), 0.0);
@@ -264,12 +275,12 @@ fn gtk_chat_switch_loading_has_static_label_without_spinner() {
         }
     }
 
-    open_chat(&state, &chat("u-rapid-first", 1));
+    open_chat(&state, &read_chat("u-rapid-first", 1));
     apply_messages(&state, messages("u-rapid-first"));
     assert_eq!(state.message_scroll.opacity(), 0.0);
     wait_for(|| !state.history.borrow().rendering);
     assert_eq!(state.message_scroll.opacity(), 0.0);
-    open_chat(&state, &chat("u-rapid-second", 2));
+    open_chat(&state, &read_chat("u-rapid-second", 2));
     drain();
     assert_eq!(
         state.msg_stack.visible_child_name().as_deref(),
@@ -287,6 +298,21 @@ fn gtk_chat_switch_loading_has_static_label_without_spinner() {
             .iter()
             .all(|id| id.starts_with("u-rapid-second"))
     );
+
+    let mut unread_chat = chat("u-unread", 3);
+    unread_chat.unread = 30;
+    open_chat(&state, &unread_chat);
+    apply_messages(&state, messages("u-unread"));
+    wait_for(|| !state.history.borrow().rendering && state.message_scroll.opacity() == 1.0);
+    let rows = state.message_list.rows();
+    let marker = state.new_sep_row.borrow().clone().expect("unread marker");
+    let marker_index = rows
+        .iter()
+        .position(|row| row == marker.upcast_ref::<gtk::Widget>())
+        .unwrap();
+    assert_eq!(rows[marker_index + 1].widget_name(), "u-unread-30");
+    let adj = state.message_scroll.vadjustment();
+    assert!(adj.value() + adj.page_size() + 20.0 < adj.upper());
 
     state.window.close();
     let _ = std::fs::remove_dir_all(temp);

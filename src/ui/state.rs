@@ -71,6 +71,7 @@ pub(super) struct AppState {
     pub msg_idle: gtk::Label,
     pub history: Rc<RefCell<super::history::ChatHistory>>,
     pub current_chat: Rc<RefCell<Option<String>>>,
+    pub opening_unread: Rc<RefCell<Option<i64>>>,
     pub chats: Rc<RefCell<Vec<ChatInfo>>>,
     pub sender_avatars: Rc<RefCell<super::sender_avatars::SenderAvatars>>,
     pub chat_avatars: Rc<RefCell<HashMap<String, gtk::Picture>>>,

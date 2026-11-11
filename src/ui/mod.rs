@@ -184,6 +184,7 @@ fn build_state(
         attachment_epoch: Rc::new(RefCell::new(0)),
         history: Default::default(),
         current_chat: Rc::new(RefCell::new(None)),
+        opening_unread: Rc::new(RefCell::new(None)),
         chats: Rc::new(RefCell::new(Vec::new())),
         chat_avatars: Rc::new(RefCell::new(HashMap::new())),
         sender_avatars: Rc::new(RefCell::new(sender_avatars::SenderAvatars::default())),
@@ -1823,6 +1824,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     clear_reply(state);
     history::reset(state, &chat.mid);
     state.current_chat.borrow_mut().replace(chat.mid.clone());
+    *state.opening_unread.borrow_mut() = Some(chat.unread.max(0));
     refresh_attachment_drafts(state);
     hide_upload_progress(state);
     {
@@ -1851,7 +1853,13 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     set_msg_state(state, "loading", None);
     clear_messages(state);
     *state.msg_list_fp.borrow_mut() = None;
-    match state.sidecar.fetch_messages(&chat.mid, 40) {
+    let limit = chat.unread.saturating_add(20).clamp(40, 1000) as u32;
+    let request = if chat.unread > 0 {
+        state.sidecar.refresh_messages(&chat.mid, limit)
+    } else {
+        state.sidecar.fetch_messages(&chat.mid, limit)
+    };
+    match request {
         Ok(id) => {
             state.pending.borrow_mut().insert(
                 id,

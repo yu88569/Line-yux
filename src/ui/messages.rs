@@ -84,6 +84,22 @@ fn apply_messages_inner(state: &AppState, messages: Vec<MessageInfo>, preserve_s
     state.media_queue.borrow_mut().clear();
     *state.stick_bottom.borrow_mut() = saved_position.is_none();
     messages.sort_by_key(|m| m.created_time);
+    let unread = if opening_chat {
+        state.opening_unread.borrow().unwrap_or(0)
+    } else {
+        0
+    };
+    let unread_id = if unread > 0 {
+        messages
+            .iter()
+            .rev()
+            .filter(|m| !m.mine)
+            .nth((unread as usize).saturating_sub(1))
+            .or_else(|| messages.iter().find(|m| !m.mine))
+            .map(|m| m.id.clone())
+    } else {
+        None
+    };
     let fingerprint = message_list_fingerprint(&messages);
     let originals: HashMap<_, _> = messages
         .iter()
@@ -178,7 +194,38 @@ fn apply_messages_inner(state: &AppState, messages: Vec<MessageInfo>, preserve_s
                         restore.message_scroll.set_opacity(1.0);
                     }
                 });
+            } else if unread_id.is_some() {
+                *state_c.scroll_pin_gen.borrow_mut() += 1;
+                *state_c.scroll_pinning.borrow_mut() = true;
+                *state_c.stick_bottom.borrow_mut() = false;
+                let restore = state_c.clone();
+                let expected_chat = chat_mid.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+                    if *restore.current_chat.borrow() == expected_chat
+                        && restore.history.borrow().generation == generation
+                    {
+                        if let Some(row) = restore.new_sep_row.borrow().as_ref() {
+                            restore.message_list.reveal(&row.clone().upcast());
+                        }
+                        let finish = restore.clone();
+                        glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(150),
+                            move || {
+                                if *finish.current_chat.borrow() == expected_chat
+                                    && finish.history.borrow().generation == generation
+                                {
+                                    *finish.opening_unread.borrow_mut() = None;
+                                    *finish.scroll_pinning.borrow_mut() = false;
+                                    *finish.stick_bottom.borrow_mut() = false;
+                                    finish.history.borrow_mut().rendering = false;
+                                    finish.message_scroll.set_opacity(1.0);
+                                }
+                            },
+                        );
+                    }
+                });
             } else {
+                *state_c.opening_unread.borrow_mut() = None;
                 state_c.history.borrow_mut().rendering = false;
                 if *state_c.stick_bottom.borrow() {
                     pin_messages_to_latest(&state_c);
@@ -193,6 +240,9 @@ fn apply_messages_inner(state: &AppState, messages: Vec<MessageInfo>, preserve_s
         let chunk: Vec<_> = left.drain(0..take).collect();
         drop(left);
         for msg in &chunk {
+            if unread_id.as_deref() == Some(msg.id.as_str()) {
+                ensure_new_message_separator(&state_c);
+            }
             append_message(&state_c, msg, false);
         }
         // Stay on the latest message while rows are still being inserted.
