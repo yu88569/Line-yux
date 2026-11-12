@@ -513,6 +513,136 @@ fn gtk_file_and_image_actions_save_pick_and_share_without_network() {
                 .any(|widget| widget.has_css_class("line-file-actions"))
         );
     }
+    let opened_files = temp.join("opened files ภาษาไทย");
+    state.config.borrow_mut().download_dir_file = opened_files.to_string_lossy().into_owned();
+    state.config.borrow_mut().download_ask_every_time = true;
+    let text_source = temp.join("cached-text.bin");
+    std::fs::write(&text_source, b"original attachment").unwrap();
+    let text_file: MessageInfo = serde_json::from_value(serde_json::json!({
+        "id":"opened-text", "contentType":"FILE", "filePath":text_source,
+        "fileName":"บันทึก.txt", "text":"[File]"
+    }))
+    .unwrap();
+    let file_bubble = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    append_file_card(&state, &file_bubble, &text_file);
+    let file_card = file_bubble
+        .first_child()
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+    let text_viewer = || {
+        gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
+            .find(|window| {
+                window.is_visible()
+                    && descendants(window.upcast_ref())
+                        .iter()
+                        .any(|widget| widget.is::<gtk::TextView>())
+            })
+    };
+    let assert_viewer_text = |expected: &str| {
+        let viewer = text_viewer().unwrap();
+        let view = descendants(viewer.upcast_ref())
+            .into_iter()
+            .find_map(|widget| widget.downcast::<gtk::TextView>().ok())
+            .unwrap();
+        let buffer = view.buffer();
+        assert_eq!(
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+            expected
+        );
+        viewer.close();
+        drain();
+    };
+    file_card.emit_clicked();
+    let saved_text = opened_files.join("บันทึก.txt");
+    assert!(
+        saved_text.is_file(),
+        "opening a file must save it to the configured directory"
+    );
+    assert_eq!(std::fs::read(&saved_text).unwrap(), b"original attachment");
+    assert_viewer_text("original attachment");
+    assert!(button(file_bubble.upcast_ref(), "file_open_folder").is_visible());
+    assert_eq!(
+        downloads::SavedAttachments::load(&state.data_dir).destination(&text_file.id),
+        Some(saved_text.as_path())
+    );
+    std::fs::write(&saved_text, b"edited saved attachment").unwrap();
+    file_card.emit_clicked();
+    assert_viewer_text("edited saved attachment");
+    assert!(!opened_files.join("บันทึก-1.txt").exists());
+    std::fs::remove_file(&text_source).unwrap();
+    *state.session_ready.borrow_mut() = false;
+    file_card.emit_clicked();
+    assert_viewer_text("edited saved attachment");
+    assert_eq!(requests(&log).len(), 7);
+    *state.session_ready.borrow_mut() = true;
+    std::fs::write(&text_source, b"original attachment").unwrap();
+
+    let changed_folder = temp.join("changed-download-folder");
+    state.config.borrow_mut().download_dir_file = changed_folder.to_string_lossy().into_owned();
+    std::fs::create_dir_all(&changed_folder).unwrap();
+    std::fs::write(changed_folder.join("บันทึก.txt"), b"existing unrelated file").unwrap();
+    file_card.emit_clicked();
+    let changed_text = changed_folder.join("บันทึก-1.txt");
+    assert_eq!(
+        std::fs::read(&changed_text).unwrap(),
+        b"original attachment"
+    );
+    assert_eq!(
+        std::fs::read(changed_folder.join("บันทึก.txt")).unwrap(),
+        b"existing unrelated file"
+    );
+    assert_viewer_text("original attachment");
+    std::fs::remove_file(&changed_text).unwrap();
+    file_card.emit_clicked();
+    assert_eq!(
+        std::fs::read(&changed_text).unwrap(),
+        b"original attachment"
+    );
+    assert_viewer_text("original attachment");
+
+    let blocked_folder = temp.join("not-a-directory");
+    std::fs::write(&blocked_folder, b"block download directory").unwrap();
+    state.config.borrow_mut().download_dir_file = blocked_folder.to_string_lossy().into_owned();
+    file_card.emit_clicked();
+    assert!(
+        text_viewer().is_none(),
+        "a failed save must not open the cached source"
+    );
+    assert_eq!(
+        state.saved_attachments.borrow().destination(&text_file.id),
+        Some(changed_text.as_path())
+    );
+
+    state.config.borrow_mut().download_dir_file = opened_files.to_string_lossy().into_owned();
+    let remote_text: MessageInfo = serde_json::from_value(serde_json::json!({
+        "id":"remote-opened-text", "contentType":"FILE", "fileName":"remote.txt", "text":"[File]"
+    }))
+    .unwrap();
+    let remote_bubble = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    append_file_card(&state, &remote_bubble, &remote_text);
+    remote_bubble
+        .first_child()
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap()
+        .emit_clicked();
+    wait_for(|| requests(&log).len() == 8);
+    let download = requests(&log).remove(7);
+    assert_eq!(download["method"], "download_media");
+    respond(
+        &state,
+        &download,
+        serde_json::json!({"path":text_source,"fileName":"remote.txt","bytes":19}),
+    );
+    assert_eq!(
+        std::fs::read(opened_files.join("remote.txt")).unwrap(),
+        b"original attachment"
+    );
+    assert_viewer_text("original attachment");
+    assert!(button(remote_bubble.upcast_ref(), "file_open_folder").is_visible());
     state.window.close();
     drain();
     std::fs::remove_dir_all(temp).unwrap();

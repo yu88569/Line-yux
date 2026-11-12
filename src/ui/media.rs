@@ -302,7 +302,22 @@ pub(super) fn request_media_action(
     }
     let needs_full_media = msg.content_type.eq_ignore_ascii_case("IMAGE")
         || matches!(&action, PendingMediaAction::ViewOrSave(value) if value == "open_viewer");
-    if let Some(path) = local_media_path(&msg, needs_full_media) {
+    let saved_path = if msg.content_type.eq_ignore_ascii_case("FILE")
+        && matches!(&action, PendingMediaAction::ViewOrSave(value) if matches!(value.as_str(), "open_viewer" | "open_external"))
+    {
+        let directory = state.config.borrow().download_dir_for("FILE");
+        state
+            .saved_attachments
+            .borrow()
+            .destination(&msg.id)
+            .filter(|destination| {
+                destination.parent() == Some(directory.as_path()) && destination.is_file()
+            })
+            .map(|destination| destination.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+    if let Some(path) = saved_path.or_else(|| local_media_path(&msg, needs_full_media)) {
         finish_downloaded_media_action(
             state,
             &action,
@@ -363,6 +378,45 @@ pub(super) fn finish_media_action(
     content_type: &str,
     message_id: Option<&str>,
 ) {
+    let saved_path;
+    let path = if content_type.eq_ignore_ascii_case("FILE")
+        && matches!(action, "open_viewer" | "open_external")
+    {
+        let directory = state.config.borrow().download_dir_for("FILE");
+        let previous = message_id.and_then(|id| {
+            state
+                .saved_attachments
+                .borrow()
+                .destination(id)
+                .filter(|destination| {
+                    destination.parent() == Some(directory.as_path()) && destination.is_file()
+                })
+                .map(std::path::Path::to_path_buf)
+        });
+        let destination = if let Some(previous) = previous {
+            previous
+        } else {
+            if let Err(error) = std::fs::create_dir_all(&directory) {
+                toast(
+                    state,
+                    &crate::i18n::tf(
+                        "media_download_failed_err",
+                        &[("error", &error.to_string())],
+                    ),
+                );
+                return;
+            }
+            let destination = downloads::unique_download_dest(&directory, suggest_name);
+            if !copy_media_to_dest(state, path, &destination, message_id) {
+                return;
+            }
+            destination
+        };
+        saved_path = destination.to_string_lossy().into_owned();
+        saved_path.as_str()
+    } else {
+        path
+    };
     let action = if content_type.eq_ignore_ascii_case("FILE")
         && matches!(action, "open_viewer" | "open_external")
     {
@@ -408,7 +462,7 @@ pub(super) fn copy_media_to_dest(
     src: &str,
     dest: &std::path::Path,
     message_id: Option<&str>,
-) {
+) -> bool {
     match std::fs::copy(src, dest) {
         Ok(_) => {
             if let Some(id) = message_id {
@@ -431,11 +485,15 @@ pub(super) fn copy_media_to_dest(
                 &crate::i18n::tf("media_saved", &[("path", &dest.display().to_string())]),
             );
             state.status.set_text(&crate::i18n::t("media_saved_status"));
+            true
         }
-        Err(e) => toast(
-            state,
-            &crate::i18n::tf("media_download_failed_err", &[("error", &e.to_string())]),
-        ),
+        Err(e) => {
+            toast(
+                state,
+                &crate::i18n::tf("media_download_failed_err", &[("error", &e.to_string())]),
+            );
+            false
+        }
     }
 }
 
