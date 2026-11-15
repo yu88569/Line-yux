@@ -43,6 +43,57 @@ pub fn sanitize_filename(suggested_name: &str) -> String {
     }
 }
 
+pub(super) fn write_album_zip(
+    files: &[(String, String)],
+    dir: &Path,
+    title: &str,
+) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(!files.is_empty(), "Album has no photos");
+    std::fs::create_dir_all(dir)?;
+    let name = sanitize_filename(title);
+    let (destination, output) = (0..10_000)
+        .find_map(|sequence| {
+            let destination = dir.join(if sequence == 0 {
+                format!("{name}.zip")
+            } else {
+                format!("{name}-{sequence}.zip")
+            });
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&destination)
+            {
+                Ok(file) => Some(Ok((destination, file))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .unwrap_or_else(|| Err(std::io::Error::other("No unused album ZIP filename")))?;
+    let result = (|| -> anyhow::Result<()> {
+        let mut archive = zip::ZipWriter::new(output);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .large_file(true);
+        for (index, (oid, path)) in files.iter().enumerate() {
+            let mut source = std::fs::File::open(path)?;
+            let extension = Path::new(path)
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("jpg");
+            let name = sanitize_filename(&format!("{:06}-{oid}.{extension}", index + 1));
+            archive.start_file(&name, options)?;
+            std::io::copy(&mut source, &mut archive)?;
+        }
+        archive.finish()?.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&destination);
+        return Err(error);
+    }
+    Ok(destination)
+}
+
 pub(super) struct SavedAttachments {
     registry_path: PathBuf,
     destinations: std::collections::HashMap<String, PathBuf>,
@@ -81,6 +132,66 @@ impl SavedAttachments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn album_zip_preserves_originals_and_safe_unique_entries_without_overwriting() {
+        let dir = std::env::temp_dir().join(format!("line-album-zip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.png");
+        std::fs::write(&source, b"original image bytes").unwrap();
+        let destination = dir.join("saved");
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(destination.join("อัลบั้ม.zip"), b"existing archive").unwrap();
+        let files = vec![
+            ("../photo".into(), source.to_str().unwrap().into()),
+            ("..\\photo".into(), source.to_str().unwrap().into()),
+        ];
+        let result = write_album_zip(&files, &destination, "อัลบั้ม").unwrap();
+        assert_eq!(result, destination.join("อัลบั้ม-1.zip"));
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(result).unwrap()).unwrap();
+        assert_eq!(archive.len(), 2);
+        let mut names = std::collections::HashSet::new();
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            assert!(entry.enclosed_name().is_some());
+            assert!(!entry.name().contains(['/', '\\']));
+            assert!(entry.name().ends_with(".png"));
+            assert!(names.insert(entry.name().to_string()));
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"original image bytes");
+        }
+        assert_eq!(std::fs::read(source).unwrap(), b"original image bytes");
+        assert_eq!(
+            std::fs::read(destination.join("อัลบั้ม.zip")).unwrap(),
+            b"existing archive"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn album_zip_removes_failed_output_and_rejects_empty_albums() {
+        let dir = std::env::temp_dir().join(format!("line-album-zip-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.jpg");
+        std::fs::write(&source, b"image").unwrap();
+        let destination = dir.join("saved");
+        let files = vec![
+            ("ready".into(), source.to_str().unwrap().into()),
+            (
+                "missing".into(),
+                dir.join("missing.png").to_str().unwrap().into(),
+            ),
+        ];
+        assert!(write_album_zip(&files, &destination, "../../album").is_err());
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
+        assert!(write_album_zip(&[], &destination, "empty").is_err());
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn sanitizes_paths_and_control_characters() {

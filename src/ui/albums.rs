@@ -34,6 +34,9 @@ enum BatchState {
     Idle,
     ChoosingFolder,
     Saving,
+    PreparingZip,
+    ChoosingZip,
+    SavingZip,
 }
 
 #[derive(Default)]
@@ -41,6 +44,7 @@ struct AlbumModel {
     items: Vec<AlbumItem>,
     cursor: Option<String>,
     visited: HashSet<String>,
+    pagination_error: Option<String>,
     page: PageState,
     selection: Selection,
     batch: BatchState,
@@ -110,6 +114,12 @@ impl AlbumModel {
             PageState::Exhausted
         };
         self.cursor = page.next_cursor.clone();
+        if self.page == PageState::Exhausted
+            && !page.photos.is_empty()
+            && page.next_cursor.is_some()
+        {
+            self.pagination_error = Some(crate::i18n::t("album_zip_incomplete"));
+        }
         photos
     }
 }
@@ -154,6 +164,7 @@ pub(super) struct AlbumGallery {
     select_all: gtk::Button,
     copy: gtk::Button,
     save: gtk::Button,
+    zip: gtk::Button,
     selection_status: gtk::Label,
     model: Rc<RefCell<AlbumModel>>,
     viewer: Rc<RefCell<Option<AlbumViewer>>>,
@@ -211,7 +222,9 @@ pub(super) fn open_album(state: &AppState, album: &AlbumRef) {
         }
     });
     let select = gtk::Button::with_label(&crate::i18n::t("album_select"));
+    let zip = gtk::Button::with_label(&crate::i18n::t("album_download_zip"));
     header.append(&title);
+    header.append(&zip);
     header.append(&select);
     header.append(&close);
     root.append(&header);
@@ -255,6 +268,7 @@ pub(super) fn open_album(state: &AppState, album: &AlbumRef) {
         select_all,
         copy,
         save,
+        zip,
         selection_status,
         model: Rc::new(RefCell::new(AlbumModel::default())),
         viewer: Rc::new(RefCell::new(None)),
@@ -287,6 +301,16 @@ pub(super) fn open_album(state: &AppState, album: &AlbumRef) {
     let s = state.clone();
     let ui2 = ui.clone();
     ui.save.connect_clicked(move |_| save_selected(&s, &ui2));
+    let s = state.clone();
+    let ui2 = ui.clone();
+    ui.zip.connect_clicked(move |_| {
+        if ui2.model.borrow().batch != BatchState::Idle {
+            return;
+        }
+        ui2.model.borrow_mut().batch = BatchState::PreparingZip;
+        refresh_selection(&ui2);
+        advance_album_zip(&s, &ui2);
+    });
     ui.window.present();
     request_page(state, &ui);
 }
@@ -295,6 +319,11 @@ fn refresh_selection(ui: &AlbumGallery) {
     let model = ui.model.borrow();
     let picking = matches!(model.selection, Selection::Picking { .. });
     let busy = model.batch != BatchState::Idle;
+    let busy_key = match model.batch {
+        BatchState::PreparingZip | BatchState::ChoosingZip => "album_zip_loading",
+        BatchState::SavingZip => "album_zip_saving",
+        _ => "album_saving",
+    };
     let (count, waiting, failed) = if let Selection::Picking { ids, .. } = &model.selection {
         let selected = model.items.iter().filter(|i| ids.contains(&i.photo.oid));
         (
@@ -329,8 +358,9 @@ fn refresh_selection(ui: &AlbumGallery) {
     ui.select_all.set_sensitive(!busy);
     ui.copy.set_sensitive(ready);
     ui.save.set_sensitive(ready);
+    ui.zip.set_sensitive(!busy);
     let key = if busy {
-        "album_saving"
+        busy_key
     } else if page_failed {
         "album_selection_page_failed"
     } else if failed > 0 {
@@ -352,6 +382,148 @@ fn refresh_selection(ui: &AlbumGallery) {
         check.set_sensitive(!busy);
         check.set_active(active);
     }
+}
+
+fn advance_album_zip(state: &AppState, ui: &AlbumGallery) {
+    if ui.model.borrow().batch != BatchState::PreparingZip {
+        return;
+    }
+    if !ui.window.is_visible() {
+        ui.model.borrow_mut().batch = BatchState::Idle;
+        return;
+    }
+    let model = ui.model.borrow();
+    let error = model.pagination_error.clone().or_else(|| {
+        if let PageState::Failed(error) = &model.page {
+            return Some(error.clone());
+        }
+        model.items.iter().find_map(|item| {
+            if item.photo.kind == AlbumMediaKind::Image
+                && let Download::Failed(error) = &item.download
+            {
+                Some(error.clone())
+            } else {
+                None
+            }
+        })
+    });
+    if let Some(error) = error {
+        drop(model);
+        ui.model.borrow_mut().batch = BatchState::Idle;
+        refresh_selection(ui);
+        let message = crate::i18n::tf("album_zip_failed", &[("error", &error)]);
+        ui.status.set_text(&message);
+        toast(state, &message);
+        return;
+    }
+    if model.page != PageState::Exhausted {
+        let request = model.page == PageState::Available;
+        drop(model);
+        ui.status.set_text(&crate::i18n::t("album_zip_loading"));
+        if request {
+            request_page(state, ui);
+        }
+        return;
+    }
+    let files: Option<Vec<_>> = model
+        .items
+        .iter()
+        .filter(|item| item.photo.kind == AlbumMediaKind::Image)
+        .map(|item| {
+            if let Download::Ready(path) = &item.download {
+                Some((item.photo.oid.clone(), path.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    drop(model);
+    let Some(files) = files else {
+        ui.status.set_text(&crate::i18n::t("album_zip_loading"));
+        return;
+    };
+    if files.is_empty() {
+        ui.model.borrow_mut().batch = BatchState::Idle;
+        refresh_selection(ui);
+        ui.status.set_text(&crate::i18n::t("album_empty"));
+        return;
+    }
+    let dir = state.config.borrow().download_dir_for("IMAGE");
+    if !state.config.borrow().download_ask_every_time {
+        save_album_zip(state, ui, files, dir);
+        return;
+    }
+    ui.model.borrow_mut().batch = BatchState::ChoosingZip;
+    refresh_selection(ui);
+    let dialog = gtk::FileDialog::builder()
+        .title(crate::i18n::t("album_zip_folder"))
+        .modal(true)
+        .build();
+    if dir.is_dir() {
+        dialog.set_initial_folder(Some(&gio::File::for_path(dir)));
+    }
+    let s = state.clone();
+    let ui2 = ui.clone();
+    dialog.select_folder(Some(&ui.window), None::<&gio::Cancellable>, move |result| {
+        ui2.model.borrow_mut().batch = BatchState::Idle;
+        if ui2.window.is_visible() {
+            ui2.status.set_text("");
+            match result {
+                Ok(folder) => {
+                    if let Some(dir) = folder.path() {
+                        save_album_zip(&s, &ui2, files, dir);
+                    } else {
+                        let message = crate::i18n::t("media_download_failed");
+                        ui2.status.set_text(&message);
+                        toast(&s, &message);
+                    }
+                }
+                Err(error)
+                    if error.matches(gtk::DialogError::Dismissed)
+                        || error.matches(gtk::DialogError::Cancelled) => {}
+                Err(error) => {
+                    ui2.status.set_text(&error.to_string());
+                    toast(&s, &error.to_string());
+                }
+            }
+        }
+        refresh_selection(&ui2);
+    });
+}
+
+fn save_album_zip(state: &AppState, ui: &AlbumGallery, files: Vec<(String, String)>, dir: PathBuf) {
+    ui.model.borrow_mut().batch = BatchState::SavingZip;
+    refresh_selection(ui);
+    ui.status.set_text(&crate::i18n::t("album_zip_saving"));
+    let title = ui.album.title.clone();
+    let count = files.len();
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let result = downloads::write_album_zip(&files, &dir, &title).map_err(|e| e.to_string());
+        let _ = sender.send_blocking(result);
+    });
+    let s = state.clone();
+    let ui2 = ui.clone();
+    glib::spawn_future_local(async move {
+        if let Ok(result) = receiver.recv().await {
+            ui2.model.borrow_mut().batch = BatchState::Idle;
+            refresh_selection(&ui2);
+            let message = match result {
+                Ok(path) => crate::i18n::tf(
+                    "album_zip_saved",
+                    &[
+                        ("count", &count.to_string()),
+                        ("path", &path.to_string_lossy()),
+                    ],
+                ),
+                Err(error) => crate::i18n::tf("album_zip_failed", &[("error", &error)]),
+            };
+            toast(&s, &message);
+            if ui2.window.is_visible() {
+                ui2.status.set_text(&message);
+            }
+        }
+    });
 }
 
 fn select_all_photos(state: &AppState, ui: &AlbumGallery) {
@@ -575,6 +747,7 @@ pub(super) fn page_failed(state: &AppState, ui: &AlbumGallery, error: &str) {
     ui.more.set_sensitive(true);
     refresh_selection(ui);
     refresh_viewer(state, ui);
+    advance_album_zip(state, ui);
 }
 
 pub(super) fn page_ready(state: &AppState, ui: &AlbumGallery, value: serde_json::Value) {
@@ -671,6 +844,7 @@ pub(super) fn page_ready(state: &AppState, ui: &AlbumGallery, value: serde_json:
     if ui.model.borrow().selecting_all() && ui.model.borrow().page == PageState::Available {
         request_page(state, ui);
     }
+    advance_album_zip(state, ui);
 }
 
 fn request_photo(
@@ -719,6 +893,7 @@ pub(super) fn photo_failed(
     button.set_sensitive(true);
     refresh_selection(ui);
     refresh_viewer(state, ui);
+    advance_album_zip(state, ui);
 }
 
 pub(super) fn photo_ready(
@@ -757,6 +932,7 @@ pub(super) fn photo_ready(
     button.set_sensitive(true);
     refresh_selection(ui);
     refresh_viewer(state, ui);
+    advance_album_zip(state, ui);
 }
 
 fn open_item(state: &AppState, ui: &AlbumGallery, index: usize) {
@@ -1014,11 +1190,25 @@ mod tests {
         assert!(model.page == PageState::Available);
         model.accept_page(&page("a"));
         assert!(model.page == PageState::Exhausted);
+        assert!(model.pagination_error.is_some());
         let empty =
             serde_json::from_value::<AlbumPage>(serde_json::json!({"photos":[],"nextCursor":"c"}))
                 .unwrap();
         model.accept_page(&empty);
         assert!(model.page == PageState::Exhausted);
+        assert!(model.pagination_error.is_some());
+        let mut empty_model = AlbumModel::default();
+        empty_model.accept_page(&empty);
+        assert!(empty_model.page == PageState::Exhausted);
+        assert!(empty_model.pagination_error.is_none());
+        let complete = serde_json::from_value::<AlbumPage>(serde_json::json!({
+            "photos":[], "nextCursor":null
+        }))
+        .unwrap();
+        let mut complete_model = AlbumModel::default();
+        complete_model.accept_page(&complete);
+        assert!(complete_model.page == PageState::Exhausted);
+        assert!(complete_model.pagination_error.is_none());
     }
 
     #[test]
@@ -1137,6 +1327,291 @@ mod tests {
             },
         );
         drain();
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display"]
+    fn gtk_album_zip_downloads_every_page_and_reports_failures() {
+        libadwaita::init().unwrap();
+        let temp =
+            std::env::temp_dir().join(format!("line-album-zip-fixture-{}", std::process::id()));
+        std::fs::create_dir_all(temp.join("protocol")).unwrap();
+        let log = temp.join("requests.jsonl");
+        let _ = std::fs::remove_file(&log);
+        let fake = temp.join("protocol/line-gtk-protocol");
+        std::fs::write(&fake, format!("#!/usr/bin/python3\nimport sys\nfor line in sys.stdin:\n with open({:?}, 'a') as log:\n  log.write(line)\n", log.to_string_lossy())).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let data = temp.join("data");
+        let destination = temp.join("downloads");
+        AppConfig {
+            animations: false,
+            tray_enabled: false,
+            notifications: false,
+            language: "en".into(),
+            download_ask_every_time: false,
+            download_dir_image: destination.to_str().unwrap().into(),
+            ..AppConfig::default()
+        }
+        .save(&data);
+        let app = Application::builder()
+            .application_id("dev.linegtk.AlbumZipFixture")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let sidecar = Rc::new(Sidecar::spawn(&temp, &data).unwrap());
+        let (state, _) = build_state(
+            &app,
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+            data,
+            sidecar,
+        );
+        let album = AlbumRef {
+            chat_mid: format!("c{}", "1".repeat(32)),
+            album_id: "5333564955743123169".into(),
+            title: "ZIP fixture".into(),
+        };
+        let open = || {
+            open_album(&state, &album);
+            let pending = state.pending.borrow();
+            let (id, ui) = pending
+                .iter()
+                .filter_map(|(id, p)| {
+                    if let Pending::AlbumPage(ui) = p {
+                        Some((*id, ui.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .max_by_key(|(id, _)| *id)
+                .unwrap();
+            (id, ui)
+        };
+        let pending_photo = |oid: &str| {
+            *state
+                .pending
+                .borrow()
+                .iter()
+                .find(|(_, p)| matches!(p, Pending::AlbumPhoto { photo, .. } if photo.oid == oid))
+                .unwrap()
+                .0
+        };
+        let (page, ui) = open();
+        respond(
+            &state,
+            page,
+            true,
+            serde_json::json!({
+                "photos":[{"oid":"first","kind":"image"}], "nextCursor":"next"
+            }),
+        );
+        ui.select.emit_clicked();
+        let check = ui.model.borrow().items[0].check.clone();
+        check.set_active(true);
+        ui.zip.emit_clicked();
+        assert!(ui.model.borrow().batch == BatchState::PreparingZip);
+        assert!(!ui.zip.is_sensitive());
+        assert!(!ui.select.is_sensitive());
+        let count = state.pending.borrow().len();
+        ui.zip.emit_clicked();
+        assert_eq!(state.pending.borrow().len(), count);
+        let page = *state
+            .pending
+            .borrow()
+            .iter()
+            .find(|(_, p)| matches!(p, Pending::AlbumPage(_)))
+            .unwrap()
+            .0;
+        respond(
+            &state,
+            page,
+            true,
+            serde_json::json!({
+                "photos":[{"oid":"first","kind":"image"}, {"oid":"second","kind":"image"},
+                          {"oid":"video","kind":"video"}], "nextCursor":"terminal-auto"
+            }),
+        );
+        let page = *state
+            .pending
+            .borrow()
+            .iter()
+            .find(|(_, p)| matches!(p, Pending::AlbumPage(_)))
+            .unwrap()
+            .0;
+        respond(
+            &state,
+            page,
+            true,
+            serde_json::json!({"photos":[], "nextCursor":"terminal-auto"}),
+        );
+        respond(
+            &state,
+            pending_photo("video"),
+            false,
+            serde_json::Value::Null,
+        );
+        assert!(ui.model.borrow().batch == BatchState::PreparingZip);
+        assert!(!destination.exists());
+        let image = temp.join("first.png");
+        let pixbuf = Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 20, 20).unwrap();
+        pixbuf.fill(0xff0000ff);
+        pixbuf.savev(&image, "png", &[]).unwrap();
+        respond(
+            &state,
+            pending_photo("second"),
+            true,
+            serde_json::json!({"path":image}),
+        );
+        assert!(ui.model.borrow().batch == BatchState::PreparingZip);
+        respond(
+            &state,
+            pending_photo("first"),
+            true,
+            serde_json::json!({"path":image}),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ui.model.borrow().batch != BatchState::Idle {
+            drain();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let mut archive =
+            zip::ZipArchive::new(std::fs::File::open(destination.join("ZIP fixture.zip")).unwrap())
+                .unwrap();
+        assert_eq!(archive.len(), 2);
+        for index in 0..2 {
+            let mut entry = archive.by_index(index).unwrap();
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+            assert_eq!(bytes, std::fs::read(&image).unwrap());
+        }
+        assert!(
+            matches!(&ui.model.borrow().selection, Selection::Picking { ids, .. } if ids.len() == 1 && ids.contains("first"))
+        );
+        assert!(ui.zip.is_sensitive());
+        ui.window.close();
+
+        let (page, ui) = open();
+        ui.zip.emit_clicked();
+        respond(&state, page, false, serde_json::Value::Null);
+        assert!(ui.model.borrow().batch == BatchState::Idle);
+        assert!(ui.status.text().contains("Album offline"));
+        ui.window.close();
+
+        let (page, ui) = open();
+        ui.zip.emit_clicked();
+        respond(
+            &state,
+            page,
+            true,
+            serde_json::json!({
+                "photos":[{"oid":"failed","kind":"image"}], "nextCursor":null
+            }),
+        );
+        respond(
+            &state,
+            pending_photo("failed"),
+            false,
+            serde_json::Value::Null,
+        );
+        assert!(ui.model.borrow().batch == BatchState::Idle);
+        assert!(ui.status.text().contains("Album offline"));
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 1);
+        ui.window.close();
+
+        let (page, ui) = open();
+        respond(
+            &state,
+            page,
+            true,
+            serde_json::json!({
+                "photos":[{"oid":"manual","kind":"image"}], "nextCursor":"terminal"
+            }),
+        );
+        respond(
+            &state,
+            pending_photo("manual"),
+            true,
+            serde_json::json!({"path":image}),
+        );
+        ui.more.emit_clicked();
+        let page = *state
+            .pending
+            .borrow()
+            .iter()
+            .find(|(_, p)| matches!(p, Pending::AlbumPage(_)))
+            .unwrap()
+            .0;
+        respond(
+            &state,
+            page,
+            true,
+            serde_json::json!({"photos":[], "nextCursor":"terminal"}),
+        );
+        assert!(!ui.more.is_visible());
+        ui.zip.emit_clicked();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ui.model.borrow().batch != BatchState::Idle {
+            drain();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let saved = destination.join("ZIP fixture-1.zip");
+        assert!(
+            saved.is_file(),
+            "ZIP after loading every photo failed: {}",
+            ui.status.text()
+        );
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(saved).unwrap()).unwrap();
+        assert_eq!(archive.len(), 1);
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut archive.by_index(0).unwrap(), &mut bytes).unwrap();
+        assert_eq!(bytes, std::fs::read(&image).unwrap());
+        ui.window.close();
+
+        let (page, ui) = open();
+        respond(
+            &state,
+            page,
+            true,
+            serde_json::json!({
+                "photos":[{"oid":"loop","kind":"image"}], "nextCursor":"loop"
+            }),
+        );
+        respond(
+            &state,
+            pending_photo("loop"),
+            true,
+            serde_json::json!({"path":image}),
+        );
+        ui.zip.emit_clicked();
+        let page = *state
+            .pending
+            .borrow()
+            .iter()
+            .find(|(_, p)| matches!(p, Pending::AlbumPage(_)))
+            .unwrap()
+            .0;
+        respond(
+            &state,
+            page,
+            true,
+            serde_json::json!({
+                "photos":[{"oid":"loop","kind":"image"}], "nextCursor":"loop"
+            }),
+        );
+        assert!(ui.model.borrow().batch == BatchState::Idle);
+        assert!(ui.status.text().contains("pagination stopped"));
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 2);
+        ui.window.close();
+        for window in gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Window>().ok())
+        {
+            window.close();
+        }
+        drain();
+        std::fs::remove_dir_all(temp).unwrap();
     }
 
     #[test]
