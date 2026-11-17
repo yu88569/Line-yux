@@ -38,8 +38,28 @@ pub fn sanitize_filename(suggested_name: &str) -> String {
     let safe = safe.trim().trim_matches('.');
     if safe.is_empty() || matches!(safe, "." | "..") {
         "download.bin".into()
-    } else {
+    } else if safe.len() <= 240 {
         safe.to_string()
+    } else {
+        let path = Path::new(safe);
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .filter(|value| value.len() <= 32)
+            .map(|value| format!(".{value}"))
+            .unwrap_or_default();
+        let stem = if extension.is_empty() {
+            safe
+        } else {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or(safe)
+        };
+        let mut end = (240 - extension.len()).min(stem.len());
+        while !stem.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}{extension}", &stem[..end])
     }
 }
 
@@ -198,6 +218,21 @@ mod tests {
         assert_eq!(sanitize_filename("../../secret\n.txt"), "_.._secret_.txt");
         assert_eq!(sanitize_filename(".."), "download.bin");
         assert_eq!(sanitize_filename(""), "download.bin");
+    }
+
+    #[test]
+    fn saves_long_multibyte_names_and_duplicates() {
+        let dir = std::env::temp_dir().join(format!("line-long-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let name = format!("{}.txt", "ก".repeat(100));
+        let first = unique_download_dest(&dir, &name);
+        std::fs::write(&first, b"first").unwrap();
+        let second = unique_download_dest(&dir, &name);
+        std::fs::write(&second, b"second").unwrap();
+        assert_ne!(first, second);
+        assert!(second.to_str().unwrap().ends_with(".txt"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

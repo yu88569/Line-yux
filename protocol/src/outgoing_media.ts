@@ -717,6 +717,14 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
         }
       } catch { /* ignore */ }
 
+      const cacheName = (name: string) => {
+        const safe = name.replace(/[\/\\]/g, "_");
+        if (new TextEncoder().encode(`${messageId}.${safe}`).length <= 240) {
+          return `${messageId}.${safe}`;
+        }
+        return `${messageId}.bin`;
+      };
+
       // Reuse local full media when already cached.
       const localCandidates = [
         fullDest(messageId, "jpg"),
@@ -734,7 +742,7 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
       ];
       if (fileName) {
         localCandidates.unshift(
-          join(mediaDir, `${messageId}.${fileName.replace(/[\/\\]/g, "_")}`),
+          join(mediaDir, cacheName(fileName)),
         );
       }
       for (const p of localCandidates) {
@@ -800,7 +808,7 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
         dest = join(
           mediaDir,
           fileName && fileName.includes(".")
-            ? `${messageId}.${fileName.replace(/[\/\\]/g, "_")}`
+            ? cacheName(fileName)
             : `${messageId}.${ext}`,
         );
         await Deno.writeFile(dest, got.buf);

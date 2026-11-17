@@ -13,6 +13,7 @@ Deno.test("small FILE downloads retain original name and reuse the exact local p
     const data = new TextEncoder().encode("OK");
     const client = new Client(new BaseClient({ device: "ANDROIDSECONDARY" }));
     let fetches = 0;
+    let remoteName = "note.txt";
     let result: unknown;
     const card: Record<string, unknown> = {
       id: "100",
@@ -37,7 +38,7 @@ Deno.test("small FILE downloads retain original name and reuse the exact local p
         return Promise.resolve({
           buf: data,
           mime: "text/plain",
-          fileName: "note.txt",
+          fileName: remoteName,
         });
       },
       uiMediaPath: () => Promise.resolve(null),
@@ -83,6 +84,15 @@ Deno.test("small FILE downloads retain original name and reuse the exact local p
       cached: true,
     });
     assertEquals(fetches, 1);
+    remoteName = `${"ก".repeat(84)}.txt`;
+    card.id = "101";
+    card.fileName = remoteName;
+    await media.downloadMedia(3, "chat", "101");
+    assertEquals(fetches, 2);
+    await media.downloadMedia(4, "chat", "101");
+    assertEquals(fetches, 2);
+    assertEquals(card.fileName, remoteName);
+    assertEquals(await Deno.readFile(String(card.filePath)), data);
   } finally {
     await Deno.remove(directory, { recursive: true });
   }
