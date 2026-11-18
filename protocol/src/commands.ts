@@ -8,12 +8,8 @@ import {
 } from "./locations.ts";
 import { parseReply } from "./replies.ts";
 import { needsAlbumMetadataRefresh } from "./albums.ts";
-import {
-  type Client,
-  loginWithAuthToken,
-  loginWithQR,
-  type TalkMessage,
-} from "@evex/linejs";
+import type { Client, TalkMessage } from "@evex/linejs";
+import { loginWithAuthToken, loginWithQR } from "./line_login.ts";
 import { FileStorage } from "@evex/linejs/storage";
 import { join } from "@std/path";
 import { atomicWriteJson } from "./storage.ts";
@@ -63,6 +59,7 @@ export type CommandRuntime = {
   storagePath: string;
   lineDevice: LineDevice;
   lineVersion: string;
+  lineLegy?: Parameters<typeof loginWithAuthToken>[1]["legy"];
   refreshCachePolicy: () => Promise<CachePolicy>;
   cachePolicy: () => CachePolicy;
   dedupe: <T>(key: string, fn: () => Promise<T>) => Promise<T>;
@@ -210,11 +207,11 @@ export function createCommandService(runtime: CommandRuntime) {
         onReceiveQRUrl: (url) => emitEvent("qr", { url }),
         onPincodeRequest: (pin) => emitEvent("pin", { pin }),
       },
-      { device, version: LINE_VERSION, storage },
+      { device, version: LINE_VERSION, legy: runtime.lineLegy, storage },
     );
     runtime.setClient(client);
     await saveAuth(client.authToken, device);
-    const profile = await client.getMyProfile();
+    const profile = client.base.profile ?? await client.getMyProfile();
     patchE2eeGuards();
     await startListen();
     ok(id, { ...(await myProfilePayload(profile)), device });
@@ -239,12 +236,13 @@ export function createCommandService(runtime: CommandRuntime) {
         {
           device,
           version: LINE_VERSION,
+          legy: runtime.lineLegy,
           storage: new FileStorage(storagePath),
         },
       );
       runtime.setClient(client);
       await saveAuth(client.authToken, device);
-      const profile = await client.getMyProfile();
+      const profile = client.base.profile ?? await client.getMyProfile();
       patchE2eeGuards();
       await startListen();
       ok(id, { ...(await myProfilePayload(profile)), device });
@@ -292,11 +290,12 @@ export function createCommandService(runtime: CommandRuntime) {
     client = await loginWithAuthToken(auth, {
       device: device as "ANDROID" | "ANDROIDSECONDARY",
       version: LINE_VERSION,
+      legy: runtime.lineLegy,
       storage,
     });
     runtime.setClient(client);
     await saveAuth(client.authToken, device);
-    const profile = await client.getMyProfile();
+    const profile = client.base.profile ?? await client.getMyProfile();
     patchE2eeGuards();
     await startListen();
     ok(id, {

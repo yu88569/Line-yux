@@ -9,7 +9,8 @@ import { incomingReply } from "./replies.ts";
  * NDJSON over stdin/stdout. Heavy I/O is cached + async so GTK stays snappy.
  */
 
-import { Client, loginWithAuthToken, TalkMessage } from "@evex/linejs";
+import { Client, TalkMessage } from "@evex/linejs";
+import { loginWithAuthToken } from "./line_login.ts";
 import { FileStorage } from "@evex/linejs/storage";
 import { fromFileUrl, join } from "@std/path";
 import { atomicWriteJson, ensurePrivateDir } from "./storage.ts";
@@ -73,6 +74,10 @@ const authStore = new AuthStore(dataDir);
 const LINE_DEVICE = (Deno.env.get("LINE_DEVICE")?.trim() ||
   "ANDROIDSECONDARY") as LineDevice;
 const LINE_VERSION = Deno.env.get("LINE_VERSION")?.trim() || "26.6.2";
+// LINE's standard HTTPS route can still work during a LEGY /enc outage.
+const lineLegy = {
+  encrypted: Deno.env.get("LINE_GTK_LEGY_HTTPS_ONLY") === "1" ? false : "auto",
+} as const;
 const chatCachePath = join(cacheDir, "chats.json");
 const contactCachePath = join(cacheDir, "contacts.json");
 const msgDiskDir = join(cacheDir, "messages");
@@ -374,6 +379,7 @@ const commands = createCommandService({
   storagePath,
   lineDevice: LINE_DEVICE,
   lineVersion: LINE_VERSION,
+  lineLegy,
   refreshCachePolicy,
   cachePolicy,
   dedupe,
@@ -2179,10 +2185,11 @@ if (needsAndroidRelogin) {
     client = await loginWithAuthToken(bootAuth, {
       device,
       version: LINE_VERSION,
+      legy: lineLegy,
       storage,
     });
     await saveAuth(client.authToken, device);
-    const profile = await client.getMyProfile();
+    const profile = client.base.profile ?? await client.getMyProfile();
     patchE2eeGuards();
     listener.start();
     emitEvent("session", await myProfilePayload(profile));

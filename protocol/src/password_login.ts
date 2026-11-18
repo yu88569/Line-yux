@@ -2,12 +2,13 @@ import {
   Client,
   type loginWithPassword as upstreamLoginWithPassword,
 } from "@evex/linejs";
-import { BaseClient } from "@evex/linejs/base";
+import type { BaseClient } from "@evex/linejs/base";
+import { createLineLoginBase } from "./line_login.ts";
 
 type PasswordLoginInit = Parameters<typeof upstreamLoginWithPassword>[1];
 
 export function createPasswordLoginBase(init: PasswordLoginInit): BaseClient {
-  const base = new BaseClient(init);
+  const base = createLineLoginBase(init);
   const request = base.request.request.bind(base.request);
   base.request.request = <T = unknown>(
     ...args: Parameters<typeof request>
