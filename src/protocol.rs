@@ -319,8 +319,14 @@ pub enum ProtocolEvent {
     CallState {
         call_id: String,
         peer: String,
+        kind: String,
         state: String,
         error: Option<String>,
+    },
+    CallVideoFrame {
+        side: String,
+        jpeg_b64: Option<String>,
+        cleared: bool,
     },
     Response {
         id: u64,

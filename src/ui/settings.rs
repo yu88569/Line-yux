@@ -491,22 +491,6 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
             .unwrap_or(0);
         input_row.set_selected(idx as u32);
     }
-    {
-        let cfg = deps.config.clone();
-        let data_dir = deps.data_dir.clone();
-        let inputs = inputs.clone();
-        input_row.connect_selected_notify(move |row| {
-            let i = row.selected() as usize;
-            if let Some((name, _)) = inputs.get(i) {
-                cfg.borrow_mut().audio_input = if name == "default" {
-                    String::new()
-                } else {
-                    name.clone()
-                };
-                cfg.borrow().save(&data_dir);
-            }
-        });
-    }
     audio_grp.add(&input_row);
 
     let outputs = crate::ui::pulse_sinks();
@@ -524,10 +508,36 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
             .unwrap_or(0);
         output_row.set_selected(idx as u32);
     }
+    audio_grp.add(&output_row);
+
+    let mic_test = Rc::new(super::mic_test::attach_mic_test_ui(
+        &audio_grp,
+        &win,
+        deps.config.clone(),
+    ));
+    {
+        let cfg = deps.config.clone();
+        let data_dir = deps.data_dir.clone();
+        let inputs = inputs.clone();
+        let mic_test = mic_test.clone();
+        input_row.connect_selected_notify(move |row| {
+            let i = row.selected() as usize;
+            if let Some((name, _)) = inputs.get(i) {
+                cfg.borrow_mut().audio_input = if name == "default" {
+                    String::new()
+                } else {
+                    name.clone()
+                };
+                cfg.borrow().save(&data_dir);
+                mic_test.on_devices_changed();
+            }
+        });
+    }
     {
         let cfg = deps.config.clone();
         let data_dir = deps.data_dir.clone();
         let outputs = outputs.clone();
+        let mic_test = mic_test.clone();
         output_row.connect_selected_notify(move |row| {
             let i = row.selected() as usize;
             if let Some((name, _)) = outputs.get(i) {
@@ -537,13 +547,57 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
                     name.clone()
                 };
                 cfg.borrow().save(&data_dir);
+                mic_test.on_devices_changed();
             }
         });
     }
-    audio_grp.add(&output_row);
+
+    let camera_grp = libadwaita::PreferencesGroup::builder()
+        .title(i18n::t("settings_camera"))
+        .description(i18n::t("settings_camera_desc"))
+        .build();
+
+    let cameras = super::camera_test::list_v4l2_cameras();
+    let camera_labels: Vec<&str> = cameras.iter().map(|(_, l)| l.as_str()).collect();
+    let camera_row = libadwaita::ComboRow::builder()
+        .title(i18n::t("camera_input"))
+        .subtitle(i18n::t("camera_input_subtitle"))
+        .build();
+    camera_row.set_model(Some(&gtk::StringList::new(&camera_labels)));
+    {
+        let cur = deps.config.borrow().video_input.clone();
+        let idx = cameras
+            .iter()
+            .position(|(p, _)| p == &cur || (cur.is_empty() && p.is_empty()))
+            .unwrap_or(0);
+        camera_row.set_selected(idx as u32);
+    }
+    camera_grp.add(&camera_row);
+
+    let camera_test = super::camera_test::attach_camera_test_ui(
+        &camera_grp,
+        &win,
+        deps.config.clone(),
+        deps.data_dir.clone(),
+    );
+    {
+        let cfg = deps.config.clone();
+        let data_dir = deps.data_dir.clone();
+        let cameras = cameras.clone();
+        let camera_test = camera_test.clone();
+        camera_row.connect_selected_notify(move |row| {
+            let i = row.selected() as usize;
+            if let Some((path, _)) = cameras.get(i) {
+                cfg.borrow_mut().video_input = path.clone();
+                cfg.borrow().save(&data_dir);
+                camera_test.on_device_changed();
+            }
+        });
+    }
 
     features.add(&chat_grp);
     features.add(&audio_grp);
+    features.add(&camera_grp);
 
     // ---- Experimental (voice calls) ----
     let exp_grp = libadwaita::PreferencesGroup::builder()
@@ -564,8 +618,9 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         .title(i18n::t("call_mic_vol"))
         .subtitle(i18n::t("call_mic_vol_subtitle"))
         .build();
-    let mic_vol = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 2.0, 0.05);
-    mic_vol.set_value(deps.config.borrow().call_mic_volume.clamp(0.0, 2.5));
+    let mic_vol = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 4.0, 0.05);
+    mic_vol.set_value(deps.config.borrow().call_mic_volume.clamp(0.0, 4.0));
+    mic_vol.add_mark(1.0, gtk::PositionType::Bottom, None);
     mic_vol.set_width_request(160);
     mic_vol.set_draw_value(true);
     mic_vol.set_digits(2);
@@ -573,9 +628,12 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
     {
         let cfg = deps.config.clone();
         let data_dir = deps.data_dir.clone();
+        let mic_test = mic_test.clone();
         mic_vol.connect_value_changed(move |scale| {
-            cfg.borrow_mut().call_mic_volume = scale.value();
+            let v = scale.value();
+            cfg.borrow_mut().call_mic_volume = v;
             cfg.borrow().save(&data_dir);
+            mic_test.set_gain(v);
         });
     }
     mic_vol_row.add_suffix(&mic_vol);
@@ -585,8 +643,9 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         .title(i18n::t("call_spk_vol"))
         .subtitle(i18n::t("call_spk_vol_subtitle"))
         .build();
-    let spk_vol = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 2.0, 0.05);
-    spk_vol.set_value(deps.config.borrow().call_spk_volume.clamp(0.0, 2.5));
+    let spk_vol = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 4.0, 0.05);
+    spk_vol.set_value(deps.config.borrow().call_spk_volume.clamp(0.0, 4.0));
+    spk_vol.add_mark(1.0, gtk::PositionType::Bottom, None);
     spk_vol.set_width_request(160);
     spk_vol.set_draw_value(true);
     spk_vol.set_digits(2);
@@ -920,7 +979,9 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         let toast = deps.toast.clone();
         let on_logout = deps.on_logout.clone();
         let win2 = win.clone();
+        let mic_test = mic_test.clone();
         logout_btn.connect_clicked(move |_| {
+            mic_test.stop();
             let _ = sidecar.logout();
             toast(&i18n::t("logged_out"));
             on_logout();

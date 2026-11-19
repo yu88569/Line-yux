@@ -332,20 +332,23 @@ function packDataOffer(codec: Uint8Array, path: Uint8Array): Uint8Array {
  */
 export function packNativeSetupOffer(
 	material: PlanetSetupOfferMaterial,
+	opts?: { videoEnabled?: boolean },
 ): Uint8Array {
-	return packNativeOneToOneOffer(material, false);
+	return packNativeOneToOneOffer(material, false, opts?.videoEnabled ?? false);
 }
 
-/** Callee audio answer: local stream IDs, disabled video, E2EE only. */
+/** Callee audio/video answer: local stream IDs, optional video, E2EE only. */
 export function packNativeAnswer(
 	material: PlanetSetupOfferMaterial,
+	opts?: { videoEnabled?: boolean },
 ): Uint8Array {
-	return packNativeOneToOneOffer(material, true);
+	return packNativeOneToOneOffer(material, true, opts?.videoEnabled ?? false);
 }
 
 function packNativeOneToOneOffer(
 	material: PlanetSetupOfferMaterial,
 	answer: boolean,
+	videoEnabled = false,
 ): Uint8Array {
 	if (material.mediaPubKey.length !== 33) {
 		throw new Error("packNativeSetupOffer: mediaPubKey must be 33 bytes");
@@ -388,7 +391,7 @@ function packNativeOneToOneOffer(
 	const video = packAudioVideoOffer(
 		"V",
 		packOfferCodec("V", {
-			enabled: 0,
+			enabled: videoEnabled ? 1 : 0,
 			bitrate: 800,
 			fps: answer ? 10 : 24,
 			profile: answer ? 1 : 2,
@@ -439,6 +442,7 @@ export interface CcVerifyReq {
 	devId: string;
 	credential: Uint8Array;
 	svcKey: string;
+	commTypeFlags?: number;
 }
 
 export function packCcVerifyReq(r: CcVerifyReq): Uint8Array {
@@ -449,7 +453,7 @@ export function packCcVerifyReq(r: CcVerifyReq): Uint8Array {
 	emitString(b, 4, r.rZone);
 	emitMessage(b, 5, r.ua);
 	emitString(b, 6, r.devId);
-	emitEnum(b, 7, 1);
+	emitEnum(b, 7, r.commTypeFlags ?? 1);
 	for (const c of [1, 2, 3, 6, 7]) emitEnum(b, 8, c);
 	emitBytes(b, 9, r.credential);
 	emitString(b, 10, r.svcKey);

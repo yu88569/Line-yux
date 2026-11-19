@@ -1997,15 +1997,25 @@ pub(super) fn append_generic_file_viewer(body: &gtk::Box, path: &str, suggest_na
 
 pub(super) fn pulse_device_list(kind: &str) -> Vec<(String, String)> {
     // kind: "sources" | "sinks"
+    if let Ok(out) = std::process::Command::new("pactl")
+        .args(["--format=json", "list", kind])
+        .output()
+        && out.status.success()
+    {
+        let text = String::from_utf8_lossy(&out.stdout);
+        if let Some(list) = super::mic_test::parse_pulse_devices_json(&text, kind == "sources") {
+            return list;
+        }
+    }
     let out = std::process::Command::new("pactl")
         .args(["list", "short", kind])
         .output()
         .ok();
     let Some(out) = out else {
-        return vec![("default".into(), "Default".into())];
+        return vec![("default".into(), crate::i18n::t("audio_device_default"))];
     };
     let text = String::from_utf8_lossy(&out.stdout);
-    let mut list = vec![("default".into(), "Default".into())];
+    let mut list = vec![("default".into(), crate::i18n::t("audio_device_default"))];
     for line in text.lines() {
         let cols: Vec<&str> = line.split_whitespace().collect();
         if cols.len() < 2 {

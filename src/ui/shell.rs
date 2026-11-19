@@ -79,6 +79,7 @@ pub struct ShellWidgets {
     pub location_btn: gtk::Button,
     pub sticker_btn: gtk::Button,
     pub call_btn: gtk::Button,
+    pub video_call_btn: gtk::Button,
     pub mute_btn: gtk::Button,
     pub jump_banner: gtk::Revealer,
     pub jump_banner_btn: gtk::Button,
@@ -327,6 +328,13 @@ pub fn build_shell_page() -> ShellWidgets {
         .sensitive(false)
         .visible(false)
         .build();
+    let video_call_btn = gtk::Button::builder()
+        .icon_name("camera-video-symbolic")
+        .tooltip_text("Video call")
+        .css_classes(["flat", "circular"])
+        .sensitive(false)
+        .visible(false)
+        .build();
     let mute_btn = gtk::Button::builder()
         .icon_name("audio-volume-high-symbolic")
         .tooltip_text("Mute chat")
@@ -336,6 +344,7 @@ pub fn build_shell_page() -> ShellWidgets {
     chat_bar.append(&title_col);
     chat_bar.append(&mute_btn);
     chat_bar.append(&call_btn);
+    chat_bar.append(&video_call_btn);
 
     let msg_stack = gtk::Stack::builder()
         .vexpand(true)
@@ -655,6 +664,7 @@ pub fn build_shell_page() -> ShellWidgets {
         location_btn,
         sticker_btn,
         call_btn,
+        video_call_btn,
         mute_btn,
         jump_banner,
         jump_banner_btn,
@@ -817,6 +827,25 @@ pub fn load_css() {
         }
         .line-call-vol-row {
             margin-top: 4px;
+        }
+        .line-camera-preview {
+            border-radius: 12px;
+            overflow: hidden;
+            background: #141416;
+            border: 1px solid alpha(@borders, 0.55);
+        }
+        .line-call-video-stage {
+            border-radius: 14px;
+            overflow: hidden;
+            background: #101013;
+            border: 1px solid alpha(@borders, 0.45);
+        }
+        .line-call-local-pip {
+            border-radius: 10px;
+            overflow: hidden;
+            background: #1c1c20;
+            border: 2px solid alpha(white, 0.28);
+            box-shadow: 0 4px 14px alpha(black, 0.45);
         }
         .line-voice-card {
             min-width: 180px;

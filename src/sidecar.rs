@@ -88,7 +88,7 @@ impl Sidecar {
                 .arg("--allow-net")
                 .arg("--allow-run=ffmpeg,ffprobe")
                 .arg("--allow-sys")
-                .arg("--allow-env=HOME,PATH,DENO_DIR,Q_DEBUG,NODE_DEBUG,NO_COLOR,LINE_GTK_DATA,LINE_GTK_LANG,LINE_GTK_CACHE_RETENTION,LINE_GTK_LEGY_HTTPS_ONLY,LINE_GTK_AUDIO_INPUT,LINE_GTK_AUDIO_OUTPUT,LINE_DEVICE,LINE_VERSION,LINE_CALL_DEVNAME,LINE_CALL_DEVICE_INFO,LINE_CALL_OPUS_SIGNAL,LINE_CALL_DEBUG")
+                .arg("--allow-env=HOME,PATH,DENO_DIR,Q_DEBUG,NODE_DEBUG,NO_COLOR,LINE_GTK_DATA,LINE_GTK_LANG,LINE_GTK_CACHE_RETENTION,LINE_GTK_LEGY_HTTPS_ONLY,LINE_GTK_AUDIO_INPUT,LINE_GTK_AUDIO_OUTPUT,LINE_GTK_VIDEO_INPUT,LINE_DEVICE,LINE_VERSION,LINE_CALL_DEVNAME,LINE_CALL_DEVICE_INFO,LINE_CALL_OPUS_SIGNAL,LINE_CALL_DEBUG")
                 .arg(&script);
             (command, deno)
         };
@@ -112,6 +112,7 @@ impl Sidecar {
                     cfg.audio_output
                 }
             })
+            .env("LINE_GTK_VIDEO_INPUT", cfg.video_input)
             .env(
                 "PATH",
                 format!(
@@ -416,11 +417,15 @@ impl Sidecar {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn call_start(
         &self,
         mid: &str,
+        call_type: &str,
         audio_input: &str,
         audio_output: &str,
+        video_input: &str,
+        mirror: bool,
         mic_gain: f64,
         spk_gain: f64,
     ) -> Result<u64> {
@@ -428,8 +433,11 @@ impl Sidecar {
             "call_start",
             Some(json!({
                 "mid": mid,
+                "callType": call_type,
                 "audioInput": if audio_input.is_empty() { "default" } else { audio_input },
                 "audioOutput": if audio_output.is_empty() { "default" } else { audio_output },
+                "videoInput": video_input,
+                "mirror": mirror,
                 "micGain": mic_gain,
                 "spkGain": spk_gain,
             })),
@@ -440,6 +448,8 @@ impl Sidecar {
         &self,
         audio_input: &str,
         audio_output: &str,
+        video_input: &str,
+        mirror: bool,
         mic_gain: f64,
         spk_gain: f64,
     ) -> Result<u64> {
@@ -448,6 +458,8 @@ impl Sidecar {
             Some(json!({
                 "audioInput": if audio_input.is_empty() { "default" } else { audio_input },
                 "audioOutput": if audio_output.is_empty() { "default" } else { audio_output },
+                "videoInput": video_input,
+                "mirror": mirror,
                 "micGain": mic_gain,
                 "spkGain": spk_gain,
             })),
@@ -477,6 +489,14 @@ impl Sidecar {
             body["spkGain"] = json!(g);
         }
         self.request("call_set_audio", Some(body))
+    }
+
+    pub fn call_set_video(&self, camera_enabled: bool, mirror: Option<bool>) -> Result<u64> {
+        let mut body = json!({ "cameraEnabled": camera_enabled });
+        if let Some(m) = mirror {
+            body["mirror"] = json!(m);
+        }
+        self.request("call_set_video", Some(body))
     }
 
     pub fn send_postback(
@@ -895,6 +915,12 @@ fn read_loop<R: std::io::Read>(
                                 .and_then(|v| v.as_str())
                                 .unwrap_or_default()
                                 .to_string(),
+                            kind: resp
+                                .extra
+                                .get("kind")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("AUDIO")
+                                .to_string(),
                             state: resp
                                 .extra
                                 .get("state")
@@ -906,6 +932,24 @@ fn read_loop<R: std::io::Read>(
                                 .get("error")
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string()),
+                        },
+                        "call_video_frame" => ProtocolEvent::CallVideoFrame {
+                            side: resp
+                                .extra
+                                .get("side")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            jpeg_b64: resp
+                                .extra
+                                .get("jpeg")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            cleared: resp
+                                .extra
+                                .get("cleared")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
                         },
                         other => ProtocolEvent::Error(format!("unknown event: {other}")),
                     };

@@ -9,6 +9,12 @@ export {
   type PlanetTransportOpts,
   type PlanetIncomingIdentity,
   type PlanetEndReason,
+  type PlanetVideoPacket,
 } from "./planet/transport.ts";
 export { opusCodecFactory } from "./opus.ts";
-export { type IncomingAudioCall, parseIncomingAudioCall } from "./incoming.ts";
+export {
+  type IncomingAudioCall,
+  type IncomingCall,
+  parseIncomingAudioCall,
+  parseIncomingCall,
+} from "./incoming.ts";

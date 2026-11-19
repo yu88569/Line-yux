@@ -39,6 +39,11 @@ const frameSamples = 960;
 const frameBytes = frameSamples * 2;
 const maxQueueSamples = frameSamples * 10; // 200 ms
 const maxSegmentAgeMs = 200;
+const softLimiterKnee = 0.85;
+// Real-time VoIP mic cleanup: strip <90Hz hum/rumble and >12kHz hiss, apply
+// adaptive FFT broadband denoise, and gently attenuate residual pause noise.
+export const MIC_VOICE_FILTER =
+  "highpass=f=90,lowpass=f=12000,afftdn=nr=20:nf=-20:tn=1,agate=threshold=-38dB:ratio=3:range=0.12:attack=10:release=220:knee=6";
 
 type QueuedAudioSegment = {
   samples: Int16Array;
@@ -90,8 +95,12 @@ function spawnAudioDevices(input: string, output: string): AudioDevices {
       "1",
       "-ar",
       String(sampleRate),
+      "-af",
+      MIC_VOICE_FILTER,
       "-f",
       "s16le",
+      "-flush_packets",
+      "1",
       "pipe:1",
     ], true);
     const speaker = spawn([
@@ -115,13 +124,17 @@ function spawnAudioDevices(input: string, output: string): AudioDevices {
   }
 }
 
-function gain(samples: Int16Array, multiplier: number): Int16Array {
+export function gain(samples: Int16Array, multiplier: number): Int16Array {
   if (multiplier === 1) return samples;
-  return Int16Array.from(
-    samples,
-    (value) =>
-      Math.max(-32768, Math.min(32767, Math.round(value * multiplier))),
-  );
+  const headroom = 1 - softLimiterKnee;
+  return Int16Array.from(samples, (value) => {
+    const norm = (value * multiplier) / 32768;
+    const abs = Math.abs(norm);
+    const limited = abs <= softLimiterKnee ? norm : Math.sign(norm) *
+      (softLimiterKnee +
+        headroom * Math.tanh((abs - softLimiterKnee) / headroom));
+    return Math.max(-32768, Math.min(32767, Math.round(limited * 32767)));
+  });
 }
 
 function signalLevel(samples: Int16Array) {
@@ -212,6 +225,24 @@ export function extractPlanetOpusPacket(payload: Uint8Array): {
   return { packet: payload.subarray(1), prefixOffset: 1 };
 }
 
+function framingHeaderTag(
+  payload: Uint8Array,
+  prefixOffset: number,
+): string {
+  const prefixHex = Array.from(
+    payload.subarray(0, Math.min(prefixOffset, 4)),
+    (b) => b.toString(16).padStart(2, "0"),
+  ).join("");
+  const tocHex = prefixOffset < payload.length
+    ? payload[prefixOffset].toString(16).padStart(2, "0")
+    : "";
+  const countHex = prefixOffset + 1 < payload.length &&
+      (payload[prefixOffset] & 0x03) === 3
+    ? payload[prefixOffset + 1].toString(16).padStart(2, "0")
+    : "";
+  return `${prefixHex}|${tocHex}|${countHex}`;
+}
+
 export async function startCallAudioIO(options: AudioOptions): Promise<{
   stop(): Promise<void>;
   done: Promise<void>;
@@ -273,15 +304,27 @@ export async function startCallAudioIO(options: AudioOptions): Promise<{
     capturedSamples: 0,
     discardedCaptureSamples: 0,
     sentPackets: 0,
+    txTocMismatches: 0,
     underflowFrames: 0,
     lastCapturedPeak: 0,
     lastCapturedRmsDbfs: -120,
+    maxCapturedPeak: 0,
+    maxCapturedRmsDbfs: -120,
+    intervalMaxCapturedPeak: 0,
+    intervalMaxCapturedRmsDbfs: -120,
     lastEncodedInputPeak: 0,
     lastEncodedInputRmsDbfs: -120,
+    maxEncodedInputPeak: 0,
+    maxEncodedInputRmsDbfs: -120,
+    intervalMaxEncodedInputPeak: 0,
+    intervalMaxEncodedInputRmsDbfs: -120,
     rxPackets: 0,
     rxBytes: 0,
     rxNonStandardPrefixPackets: 0,
     rxMultiBytePrefixPackets: 0,
+    rxHeaderShapes: {} as Record<string, number>,
+    rxFirst5Headers: [] as string[],
+    txFirst3Headers: [] as string[],
     decodedFrames: 0,
     decodedSamples: 0,
     decodeErrors: 0,
@@ -438,15 +481,28 @@ export async function startCallAudioIO(options: AudioOptions): Promise<{
       bytes.set(value, pending.length);
       stats.capturedBytes += value.length;
       stats.capturedSamples = Math.floor(stats.capturedBytes / 2);
+      const aligned = value.byteOffset % 2 === 0 ? value : value.slice();
       const level = signalLevel(
         new Int16Array(
-          value.buffer,
-          value.byteOffset,
-          Math.floor(value.byteLength / 2),
+          aligned.buffer,
+          aligned.byteOffset,
+          Math.floor(aligned.byteLength / 2),
         ),
       );
       stats.lastCapturedPeak = level.peak;
       stats.lastCapturedRmsDbfs = level.rmsDbfs;
+      if (level.peak > stats.maxCapturedPeak) {
+        stats.maxCapturedPeak = level.peak;
+      }
+      if (level.rmsDbfs > stats.maxCapturedRmsDbfs) {
+        stats.maxCapturedRmsDbfs = level.rmsDbfs;
+      }
+      if (level.peak > stats.intervalMaxCapturedPeak) {
+        stats.intervalMaxCapturedPeak = level.peak;
+      }
+      if (level.rmsDbfs > stats.intervalMaxCapturedRmsDbfs) {
+        stats.intervalMaxCapturedRmsDbfs = level.rmsDbfs;
+      }
       const discard = Math.max(
         0,
         Math.floor((bytes.length - frameBytes * 10) / 2) * 2,
@@ -461,6 +517,10 @@ export async function startCallAudioIO(options: AudioOptions): Promise<{
     while (!cancellation.signal.aborted) {
       if (performance.now() >= nextReportAt) {
         reportAudio("interval");
+        stats.intervalMaxCapturedPeak = 0;
+        stats.intervalMaxCapturedRmsDbfs = -120;
+        stats.intervalMaxEncodedInputPeak = 0;
+        stats.intervalMaxEncodedInputRmsDbfs = -120;
         nextReportAt = performance.now() + 5000;
       }
       let samples = new Int16Array(frameSamples);
@@ -476,6 +536,18 @@ export async function startCallAudioIO(options: AudioOptions): Promise<{
       const inputLevel = signalLevel(inputSamples);
       stats.lastEncodedInputPeak = inputLevel.peak;
       stats.lastEncodedInputRmsDbfs = inputLevel.rmsDbfs;
+      if (inputLevel.peak > stats.maxEncodedInputPeak) {
+        stats.maxEncodedInputPeak = inputLevel.peak;
+      }
+      if (inputLevel.rmsDbfs > stats.maxEncodedInputRmsDbfs) {
+        stats.maxEncodedInputRmsDbfs = inputLevel.rmsDbfs;
+      }
+      if (inputLevel.peak > stats.intervalMaxEncodedInputPeak) {
+        stats.intervalMaxEncodedInputPeak = inputLevel.peak;
+      }
+      if (inputLevel.rmsDbfs > stats.intervalMaxEncodedInputRmsDbfs) {
+        stats.intervalMaxEncodedInputRmsDbfs = inputLevel.rmsDbfs;
+      }
       const packet = encoder.encode({
         samples: inputSamples,
         sampleRate,
@@ -487,6 +559,28 @@ export async function startCallAudioIO(options: AudioOptions): Promise<{
           single.set(packet, 1);
           if (!pendingFirstPacket) {
             pendingFirstPacket = single;
+          } else if (
+            pendingFirstPacket.length > 1 && single.length > 1 &&
+            (pendingFirstPacket[1] & 0xfc) !== (single[1] & 0xfc)
+          ) {
+            // RFC 6716 Code-3 packets require identical TOC configs across frames;
+            // flush the prior frame alone instead of corrupting the mismatched pair.
+            stats.txTocMismatches++;
+            pendingFirstPacket[0] = stats.sentPackets < 2 ? 0x00 : 0x10;
+            if (stats.txFirst3Headers.length < 3) {
+              stats.txFirst3Headers.push(
+                `${
+                  framingHeaderTag(pendingFirstPacket, 1)
+                }|${pendingFirstPacket.length}`,
+              );
+            }
+            await untilStopped(
+              options.transport.send(pendingFirstPacket, {
+                timestampStep: frameSamples,
+              }),
+            );
+            stats.sentPackets++;
+            pendingFirstPacket = single;
           } else {
             const [paired] = packetizeNativeGroupOpusPairs([
               pendingFirstPacket,
@@ -495,6 +589,11 @@ export async function startCallAudioIO(options: AudioOptions): Promise<{
             pendingFirstPacket = undefined;
             if (paired) {
               paired[0] = stats.sentPackets < 2 ? 0x00 : 0x10;
+              if (stats.txFirst3Headers.length < 3) {
+                stats.txFirst3Headers.push(
+                  `${framingHeaderTag(paired, 1)}|${paired.length}`,
+                );
+              }
               await untilStopped(
                 options.transport.send(paired, {
                   timestampStep: frameSamples * 2,
@@ -507,6 +606,11 @@ export async function startCallAudioIO(options: AudioOptions): Promise<{
           const payload = new Uint8Array(packet.length + 1);
           payload[0] = stats.sentPackets < 2 ? 0x00 : 0x10;
           payload.set(packet, 1);
+          if (stats.txFirst3Headers.length < 3) {
+            stats.txFirst3Headers.push(
+              `${framingHeaderTag(payload, 1)}|${payload.length}`,
+            );
+          }
           await untilStopped(
             options.transport.send(payload, { timestampStep: frameSamples }),
           );
@@ -532,6 +636,17 @@ export async function startCallAudioIO(options: AudioOptions): Promise<{
       const { packet, prefixOffset } = extractPlanetOpusPacket(payload);
       if (prefixOffset > 1) {
         stats.rxMultiBytePrefixPackets++;
+      }
+      const headerTag = framingHeaderTag(payload, prefixOffset);
+      if (stats.rxFirst5Headers.length < 5) {
+        stats.rxFirst5Headers.push(`${headerTag}|${payload.length}`);
+      }
+      if (
+        headerTag in stats.rxHeaderShapes ||
+        Object.keys(stats.rxHeaderShapes).length < 16
+      ) {
+        stats.rxHeaderShapes[headerTag] =
+          (stats.rxHeaderShapes[headerTag] ?? 0) + 1;
       }
       let frame;
       try {

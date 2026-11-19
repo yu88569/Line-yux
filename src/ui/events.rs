@@ -122,13 +122,20 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 return;
             }
             let name = peer_display_name(state, &from);
+            *state.pending_call_peer.borrow_mut() = None;
+            *state.pending_call_kind.borrow_mut() = "AUDIO".into();
             *state.incoming_call_from.borrow_mut() = Some(from.clone());
-            ensure_call_window(
-                state,
-                &name,
-                CallMode::Incoming(&crate::i18n::tf("call_incoming", &[("name", &name)])),
+            *state.incoming_call_kind.borrow_mut() = kind.clone();
+            let incoming_msg = crate::i18n::tf(
+                if kind == "VIDEO" {
+                    "call_video_incoming"
+                } else {
+                    "call_incoming"
+                },
+                &[("name", &name)],
             );
-            notify_call_incoming(state, &name);
+            ensure_call_window(state, &name, &kind, CallMode::Incoming(&incoming_msg));
+            notify_call_incoming(state, &name, &kind);
         }
         ProtocolEvent::CallCanceled {
             call_id,
@@ -142,6 +149,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             let was_active = state.active_call_peer.borrow().as_deref() == Some(from.as_str());
             if was_incoming {
                 *state.incoming_call_from.borrow_mut() = None;
+                *state.incoming_call_kind.borrow_mut() = "AUDIO".into();
             }
             if was_incoming || was_active {
                 close_active_call_ui(state);
@@ -150,11 +158,19 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         ProtocolEvent::CallState {
             call_id,
             peer,
+            kind,
             state: call_state,
             error,
         } => {
-            tracing::debug!(%call_id, %peer, state = %call_state, ?error, "call state changed");
-            handle_call_state(state, &peer, &call_state, error.as_deref());
+            tracing::debug!(%call_id, %peer, %kind, state = %call_state, ?error, "call state changed");
+            handle_call_state(state, &peer, &kind, &call_state, error.as_deref());
+        }
+        ProtocolEvent::CallVideoFrame {
+            side,
+            jpeg_b64,
+            cleared,
+        } => {
+            handle_call_video_frame(state, &side, jpeg_b64.as_deref(), cleared);
         }
         ProtocolEvent::Message(msg) => {
             let peer = msg.chat_mid().to_owned();

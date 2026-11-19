@@ -14,7 +14,7 @@ export type IncomingCallRoute = Pick<
 	| "toMid"
 >;
 
-/** Ordinary one-to-one audio only. Treat the route and credential as secrets. */
+/** Ordinary one-to-one audio or video call. Treat the route and credential as secrets. */
 export interface IncomingAudioCall {
 	callId: string;
 	callerMid: string;
@@ -22,6 +22,11 @@ export interface IncomingAudioCall {
 	createdAt: number;
 	route: IncomingCallRoute;
 	credential: Uint8Array;
+	kind?: "AUDIO" | "VIDEO";
+}
+
+export interface IncomingCall extends IncomingAudioCall {
+	kind: "AUDIO" | "VIDEO";
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -57,6 +62,15 @@ export function parseIncomingAudioCall(
 	value: unknown,
 	localMid: string,
 ): IncomingAudioCall | undefined {
+	const parsed = parseIncomingCall(value, localMid);
+	return parsed?.kind === "AUDIO" ? parsed : undefined;
+}
+
+/** Parse one-to-one incoming audio ("CA") or video ("CV") call operations. */
+export function parseIncomingCall(
+	value: unknown,
+	localMid: string,
+): IncomingCall | undefined {
 	const op = object(value);
 	const userMid = /^u[0-9a-f]{32}$/;
 	if (
@@ -65,8 +79,9 @@ export function parseIncomingAudioCall(
 		!userMid.test(localMid) || op.param1 === localMid || !token(op.param2)
 	) return;
 	const p = jsonObject(op.param3);
+	const kind = p?.k === "CA" ? "AUDIO" : p?.k === "CV" ? "VIDEO" : undefined;
 	if (
-		!p || p.k !== "CA" || !absent(p.g) || !absent(p.sei) || p.n !== op.param2 ||
+		!p || !kind || !absent(p.g) || !absent(p.sei) || p.n !== op.param2 ||
 		!token(p.vs) || !token(p.vfz) || !token(p.vtz) || !hosts(p.h) ||
 		(!absent(p.hv6) && !hosts(p.hv6))
 	) return;
@@ -93,6 +108,7 @@ export function parseIncomingAudioCall(
 		callerMid: op.param1,
 		localMid,
 		createdAt,
+		kind,
 		route: {
 			voipAddress: p.h,
 			voipAddress6: typeof p.hv6 === "string" ? p.hv6 : "",

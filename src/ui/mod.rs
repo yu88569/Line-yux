@@ -4,6 +4,7 @@ mod attachment_draft_tests;
 mod attachment_drafts;
 mod call_window;
 mod calls;
+mod camera_test;
 mod chat_media_viewer;
 #[cfg(test)]
 mod chat_tests;
@@ -22,6 +23,7 @@ mod locations;
 mod login;
 mod media;
 mod messages;
+mod mic_test;
 mod notifications;
 mod qr;
 mod replies;
@@ -235,6 +237,7 @@ fn build_state(
         sticker_btn: shell.sticker_btn,
         sticker_popover: shell.sticker_popover,
         call_btn: shell.call_btn,
+        video_call_btn: shell.video_call_btn,
         mute_btn: shell.mute_btn,
         composer_stack: shell.composer_stack,
         record_cancel_btn: shell.record_cancel_btn,
@@ -250,11 +253,16 @@ fn build_state(
         recording_tick: Rc::new(RefCell::new(None)),
         voice_playback: Rc::new(RefCell::new(None)),
         session_ready: Rc::new(RefCell::new(false)),
+        pending_call_peer: Rc::new(RefCell::new(None)),
+        pending_call_kind: Rc::new(RefCell::new("AUDIO".into())),
         active_call_peer: Rc::new(RefCell::new(None)),
+        active_call_kind: Rc::new(RefCell::new("AUDIO".into())),
         incoming_call_from: Rc::new(RefCell::new(None)),
+        incoming_call_kind: Rc::new(RefCell::new("AUDIO".into())),
         call_ui: Rc::new(RefCell::new(None)),
         call_mic_muted: Rc::new(RefCell::new(false)),
         call_deafened: Rc::new(RefCell::new(false)),
+        call_camera_enabled: Rc::new(RefCell::new(true)),
         tray: Rc::new(RefCell::new(None)),
         tray_tx,
         discord: crate::discord_rpc::DiscordRpc::start(),
@@ -1617,6 +1625,7 @@ fn wire_actions(state: &AppState) {
                     clear_messages(&s2);
                     s2.chats.borrow_mut().clear();
                     close_active_call_ui(&s2);
+                    *s2.pending_call_peer.borrow_mut() = None;
                     *s2.active_call_peer.borrow_mut() = None;
                     *s2.incoming_call_from.borrow_mut() = None;
                     login::show_qr_stage(&s2.login);
@@ -1719,7 +1728,11 @@ fn wire_actions(state: &AppState) {
 
     let s = state.clone();
     state.call_btn.connect_clicked(move |_| {
-        start_voice_call(&s);
+        open_voice_call_dialog(&s);
+    });
+    let s = state.clone();
+    state.video_call_btn.connect_clicked(move |_| {
+        open_video_call_dialog(&s);
     });
     let s = state.clone();
     state.mute_btn.connect_clicked(move |_| {

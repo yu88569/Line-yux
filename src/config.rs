@@ -40,9 +40,13 @@ pub struct AppConfig {
     pub audio_input: String,
     /// PulseAudio / PipeWire sink name, or empty / "default".
     pub audio_output: String,
-    /// Call microphone gain (0.0 .. 2.5), 1.0 = unity.
+    /// V4L2 camera device path (e.g. "/dev/video0"), or empty for auto.
+    pub video_input: String,
+    /// Mirror local camera preview horizontally (natural self-view).
+    pub call_video_mirror: bool,
+    /// Call microphone gain (0.0 .. 4.0), 1.0 = unity.
     pub call_mic_volume: f64,
-    /// Call speaker gain (0.0 .. 2.5), 1.0 = unity.
+    /// Call speaker gain (0.0 .. 4.0), 1.0 = unity.
     pub call_spk_volume: f64,
     /// Chat list sidebar width in px (remembered across launches).
     pub sidebar_width: i32,
@@ -90,6 +94,8 @@ impl Default for AppConfig {
             last_chat_mid: String::new(),
             audio_input: String::new(),
             audio_output: String::new(),
+            video_input: String::new(),
+            call_video_mirror: true,
             call_mic_volume: 1.0,
             call_spk_volume: 1.0,
             sidebar_width: 320,
@@ -193,8 +199,8 @@ impl AppConfig {
         self.font_scale = finite_or(self.font_scale, 1.0).clamp(0.60, 1.40);
         self.notification_sound_volume =
             finite_or(self.notification_sound_volume, 1.0).clamp(0.0, 2.0);
-        self.call_mic_volume = finite_or(self.call_mic_volume, 1.0).clamp(0.0, 2.5);
-        self.call_spk_volume = finite_or(self.call_spk_volume, 1.0).clamp(0.0, 2.5);
+        self.call_mic_volume = finite_or(self.call_mic_volume, 1.0).clamp(0.0, 4.0);
+        self.call_spk_volume = finite_or(self.call_spk_volume, 1.0).clamp(0.0, 4.0);
         self.sidebar_width = self.sidebar_width.clamp(80, 520);
         self.notifications_muted_until = self.notifications_muted_until.max(0);
     }

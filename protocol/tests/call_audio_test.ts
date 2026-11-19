@@ -2,6 +2,7 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   type AudioDevices,
   extractPlanetOpusPacket,
+  gain,
   startCallAudioIO,
 } from "../src/call_audio.ts";
 import { packetizeNativeGroupOpusPairs } from "../vendor/linejs-call/audio.ts";
@@ -671,4 +672,98 @@ Deno.test("pairedOpus mode bundles two 20ms Opus frames into 40ms Code-3 packets
     await session.done;
     peerDecoder.close?.();
   }
+});
+
+Deno.test("pairedOpus flushes mismatched Opus TOC frames separately instead of corrupting Code-3 pairs", async () => {
+  const sent: Array<{ payload: Uint8Array; timestampStep: number }> = [];
+  let input!: ReadableStreamDefaultController<Uint8Array>;
+  const devices: AudioDevices = {
+    input: new ReadableStream({
+      start(controller) {
+        input = controller;
+      },
+    }),
+    output: new WritableStream(),
+    close: () => Promise.resolve(),
+  };
+  let encodedIndex = 0;
+  // Simulate opusscript switching between 0x68 (Hybrid SWB) and 0x78 (Hybrid FB)
+  const scripted = [
+    new Uint8Array([0x68, 0x11, 0x12, 0x13]),
+    new Uint8Array([0x78, 0x21, 0x22, 0x23, 0x24]),
+    new Uint8Array([0x78, 0x31, 0x32, 0x33, 0x34]),
+  ];
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    if (args[0] === "[call audio stats]") logs.push(String(args[1]));
+  };
+  const session = await startCallAudioIO({
+    transport: {
+      send(payload, options) {
+        sent.push({
+          payload: payload.slice(),
+          timestampStep: options.timestampStep,
+        });
+        return Promise.resolve();
+      },
+      receive() {
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise<IteratorResult<Uint8Array>>(() => {}),
+          }),
+        };
+      },
+    },
+    controls,
+    pairedOpus: true,
+    signal: new AbortController().signal,
+    codecFactory: () =>
+      Promise.resolve({
+        newEncoder: () => ({
+          encode: () => scripted[encodedIndex++] ?? null,
+        }),
+        newDecoder: () => ({ decode: () => null }),
+      }),
+    spawnDevices: () => devices,
+  });
+  try {
+    // Also exercise an odd byteOffset chunk to verify alignment safety
+    const backing = new Uint8Array(1920 * 4 + 1);
+    const pcm = new Int16Array(1920 * 2);
+    for (let i = 0; i < pcm.length; i++) pcm[i] = i < 960 ? 5000 : 12000;
+    backing.set(new Uint8Array(pcm.buffer), 1);
+    input.enqueue(backing.subarray(1));
+    await waitFor(() => sent.length >= 2);
+    // First packet must be flushed single 20ms frame (0x68) with timestampStep 960
+    assertEquals(sent[0].timestampStep, 960);
+    assertEquals(sent[0].payload[0], 0x00);
+    assertEquals(sent[0].payload[1], 0x68);
+    // Second packet must be paired 40ms Code-3 frame of the two matching 0x78 frames
+    assertEquals(sent[1].timestampStep, 1920);
+    assertEquals(sent[1].payload[0], 0x00);
+    assertEquals(sent[1].payload[1], 0x7b);
+  } finally {
+    await session.stop();
+    await session.done;
+    console.error = originalError;
+  }
+  const stopped = logs.find((l) => l.includes('"event":"stopped"'));
+  assert(stopped);
+  const summary = JSON.parse(stopped);
+  assertEquals(summary.txTocMismatches, 1);
+  assert(summary.maxCapturedPeak >= 12000);
+  assert(summary.maxEncodedInputPeak >= 12000);
+});
+
+Deno.test("gain scales linearly below knee and soft-limits peaks without flat hard-clipping", () => {
+  const input = new Int16Array([1000, -1000, 15000, 20000, -20000]);
+  const identity = gain(input, 1);
+  assertEquals(identity, input);
+  const boosted = gain(input, 2.5);
+  assertEquals(boosted[0], 2500);
+  assertEquals(boosted[1], -2500);
+  assert(boosted[2] > 28000 && boosted[2] < boosted[3]);
+  assert(boosted[3] <= 32767);
+  assert(boosted[4] < -28000 && boosted[4] >= -32767);
 });

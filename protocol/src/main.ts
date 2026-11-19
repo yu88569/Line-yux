@@ -1932,8 +1932,16 @@ async function handle(req: Json) {
             ? params.audioOutput
             : undefined,
         );
+        calls.setCallVideoDevice(
+          typeof params.videoInput === "string" ? params.videoInput : undefined,
+          params.mirror,
+        );
         calls.setCallGains(params.micGain, params.spkGain);
-        await calls.doCallStart(id, String(params.mid ?? params.chatMid ?? ""));
+        await calls.doCallStart(
+          id,
+          String(params.mid ?? params.chatMid ?? ""),
+          params.callType === "VIDEO" ? "VIDEO" : "AUDIO",
+        );
         break;
       case "call_answer":
         calls.setCallAudioDevices(
@@ -1941,6 +1949,10 @@ async function handle(req: Json) {
           typeof params.audioOutput === "string"
             ? params.audioOutput
             : undefined,
+        );
+        calls.setCallVideoDevice(
+          typeof params.videoInput === "string" ? params.videoInput : undefined,
+          params.mirror,
         );
         calls.setCallGains(params.micGain, params.spkGain);
         await calls.doCallAnswer(id);
@@ -1953,6 +1965,10 @@ async function handle(req: Json) {
         break;
       case "call_set_audio": {
         ok(id, calls.updateCallAudio(params));
+        break;
+      }
+      case "call_set_video": {
+        ok(id, calls.updateCallVideo(params));
         break;
       }
       case "send_postback": {

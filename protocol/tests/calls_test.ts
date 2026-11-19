@@ -175,6 +175,30 @@ Deno.test("call receive diagnostics summarize allowlisted health without packet 
     debug({ type: "media_recv", payloadType: secret });
     debug({ type: "media_decrypt_fail", reason: secret });
     debug({ type: "media_decrypt_fail", reason: "SRTP auth tag mismatch" });
+    debug({
+      type: "media_configured",
+      endpoint: "mAddr",
+      ssrc: 101,
+      payloadType: 96,
+      mediaKeyMode: "audio-reverse-stage",
+      activeMediaKeyMode: "audio-reverse-stage",
+      host: secret,
+    });
+    debug({
+      type: "media_endpoint_learned",
+      family: "ipv4",
+      port: 12345,
+      host: secret,
+    });
+    debug({
+      type: "media_send",
+      bytes: 94,
+      payloadBytes: 68,
+      payloadType: 96,
+      ssrc: 101,
+      rtpFirstByte: 0x90,
+      host: secret,
+    });
     await doCallEnd(null);
     const combined = logs.join("\n");
     assert(!combined.includes(secret));
@@ -191,6 +215,12 @@ Deno.test("call receive diagnostics summarize allowlisted health without packet 
     assert(final.includes('"authenticatedByPayloadType":{"96":1000}'));
     assert(final.includes('"decryptFailures":2'));
     assert(final.includes('"firstFailure":"other"'));
+    assert(final.includes('"txMediaPackets":1'));
+    assert(final.includes('"txMediaBytes":94'));
+    assert(final.includes('"txSsrc":101'));
+    assert(final.includes('"txPayloadType":96'));
+    assert(final.includes('"endpointSource":"mAddr"'));
+    assert(final.includes('"endpointLearned":1'));
   } finally {
     await shutdownCalls();
     console.error = originalError;
@@ -306,13 +336,13 @@ Deno.test("decline verifies and releases the inbound route without accepting or 
     await shutdownCalls();
   }
 });
-Deno.test("incoming rejects stale video group offers and preserves a busy or duplicate offer", async () => {
+Deno.test("incoming rejects stale, unknown-kind, and group offers and preserves a busy or duplicate offer", async () => {
   const h = harness();
   try {
     handleIncomingCall({
       raw: { ...h.offer, createdTime: Date.now() - 120_001 },
     });
-    handleIncomingCall({ raw: rawOffer(h.callId, { k: "CV" }) });
+    handleIncomingCall({ raw: rawOffer(h.callId, { k: "XX" }) });
     handleIncomingCall({ raw: rawOffer(h.callId, { g: "group" }) });
     handleIncomingCall({ callMid: "legacy", from: caller });
     assertEquals(h.events.length, 0);
@@ -326,6 +356,18 @@ Deno.test("incoming rejects stale video group offers and preserves a busy or dup
       h.events.filter((ev) => ev.event === "call_incoming").length,
       1,
     );
+  } finally {
+    await shutdownCalls();
+  }
+});
+Deno.test("incoming accepts 1:1 video (CV) offers with kind VIDEO", async () => {
+  const h = harness();
+  try {
+    handleIncomingCall({ raw: rawOffer(h.callId, { k: "CV" }) });
+    assertEquals(h.events.length, 1);
+    assertEquals(h.events[0].event, "call_incoming");
+    assertEquals(h.events[0].payload?.kind, "VIDEO");
+    assertEquals(h.events[0].payload?.callId, h.callId);
   } finally {
     await shutdownCalls();
   }
