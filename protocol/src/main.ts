@@ -358,6 +358,18 @@ const boxCursor = new Map<string, BoxCursor>();
 
 const listener = createListener({
   getClient: () => client,
+  getMyMid: myMid,
+  onChatRead: async (chatMid) => {
+    if (!chatCache) return;
+    const row = chatCache.chats.find((x) => x.mid === chatMid);
+    if (!row || row.unread === 0) return;
+    row.unread = 0;
+    try {
+      await atomicWriteJson(chatCachePath, chatCache);
+    } catch (error) {
+      console.error("[chat-read-cache]", chatMid, error);
+    }
+  },
   onTransportStalled: () => {
     console.error("[listen] PUSH transport stalled; restarting sidecar");
     Deno.exit(1);

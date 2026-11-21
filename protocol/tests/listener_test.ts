@@ -168,3 +168,163 @@ for (
     ]);
   });
 }
+
+Deno.test("listener treats SEND_MESSAGE ops as mine even when raw from is empty", async () => {
+  for (const opType of ["SEND_MESSAGE", 25] as const) {
+    for (
+      const { to, expectedPeer } of [
+        { to: "u-peer", expectedPeer: "u-peer" },
+        { to: "c-group", expectedPeer: "c-group" },
+      ]
+    ) {
+      const client = new Client(
+        new BaseClient({
+          device: "ANDROIDSECONDARY",
+          fetch: () => {
+            throw new Error("Network forbidden in listener test");
+          },
+        }),
+      );
+      Object.defineProperty(client, "listen", { value: () => {} });
+      const emitted = Promise.withResolvers<void>();
+      const events: Array<
+        { event: string; payload?: Record<string, unknown> }
+      > = [];
+      const upserts: Record<string, unknown>[] = [];
+      const listener = createListener({
+        getClient: () => client,
+        getMyMid: () => "u-self",
+        onTransportStalled: () => {},
+        setListening: () => {},
+        summarizeTalkMessage: () =>
+          Promise.resolve({
+            id: `msg-${opType}-${to}`,
+            from: "",
+            to,
+            mine: false,
+            createdTime: 789,
+            needsMedia: false,
+            reply: { id: "orig-1", chatMid: "" },
+          }),
+        invalidateMessages: () => {},
+        storeBoxCursor: () => {},
+        upsertChatFromMessage: (message) => {
+          upserts.push(message);
+          emitted.resolve();
+          return Promise.resolve();
+        },
+        hydrateLiveMedia: () => Promise.resolve(),
+        upsertChatFromContact: () => Promise.resolve(),
+        emitEvent: (event, payload) => {
+          events.push({ event, payload });
+        },
+      });
+      listener.start();
+      client.emit(
+        "event",
+        {
+          type: opType,
+          message: { id: `msg-${opType}-${to}`, from: "", to },
+        } as never,
+      );
+      client.emit(
+        "message",
+        new TalkMessage({
+          client,
+          raw: {
+            id: `msg-${opType}-${to}`,
+            from: "",
+            to,
+            toType: to.startsWith("c") ? "GROUP" : "USER",
+            createdTime: 789,
+            deliveredTime: 789,
+            text: "hi",
+            hasContent: false,
+            contentType: "NONE",
+            contentPreview: "",
+            contentMetadata: {},
+            sessionId: 0,
+            chunks: [],
+            relatedMessageId: "",
+            messageRelationType: 0,
+            readCount: 0,
+            relatedMessageServiceCode: "TALK",
+            appExtensionType: 0,
+            reactions: [],
+            updatedTime: 789,
+          } as never,
+        }),
+      );
+      await emitted.promise;
+      listener.stop();
+      const msgEvent = events.find((e) => e.event === "message");
+      const msg = msgEvent?.payload?.message as Record<string, unknown>;
+      assertEquals(msg.mine, true);
+      assertEquals(msg.from, "u-self");
+      assertEquals(msg.to, expectedPeer);
+      assertEquals(
+        (msg.reply as Record<string, unknown>).chatMid,
+        expectedPeer,
+      );
+      assertEquals(upserts[0]?.mine, true);
+      assertEquals(upserts[0]?.from, "u-self");
+    }
+  }
+});
+
+Deno.test("listener handles SEND_CHAT_CHECKED ops and emits chat_read", async () => {
+  for (const opType of ["SEND_CHAT_CHECKED", 40] as const) {
+    const client = new Client(
+      new BaseClient({
+        device: "ANDROIDSECONDARY",
+        fetch: () => {
+          throw new Error("Network forbidden in listener test");
+        },
+      }),
+    );
+    Object.defineProperty(client, "listen", { value: () => {} });
+    const events: unknown[] = [];
+    const readCalls: Array<{ chatMid: string; messageId: string }> = [];
+    const notified = Promise.withResolvers<void>();
+    const listener = createListener({
+      getClient: () => client,
+      onChatRead: (chatMid, messageId) => {
+        readCalls.push({ chatMid, messageId });
+        notified.resolve();
+      },
+      onTransportStalled: () => {},
+      setListening: () => {},
+      summarizeTalkMessage: () => Promise.resolve({}),
+      invalidateMessages: () => {},
+      storeBoxCursor: () => {},
+      upsertChatFromMessage: () => Promise.resolve(),
+      hydrateLiveMedia: () => Promise.resolve(),
+      upsertChatFromContact: () => Promise.resolve(),
+      emitEvent: (event, payload) => {
+        events.push({ event, payload });
+      },
+    });
+    listener.start();
+    client.emit(
+      "event",
+      {
+        type: opType,
+        param1: "u-peer-1",
+        param2: "999888777",
+      } as never,
+    );
+    await notified.promise;
+    listener.stop();
+    assertEquals(readCalls, [{
+      chatMid: "u-peer-1",
+      messageId: "999888777",
+    }]);
+    assertEquals(events, [
+      { event: "listening", payload: undefined },
+      {
+        event: "chat_read",
+        payload: { chatMid: "u-peer-1", messageId: "999888777" },
+      },
+    ]);
+  }
+});

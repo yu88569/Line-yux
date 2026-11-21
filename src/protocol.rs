@@ -318,6 +318,10 @@ pub enum ProtocolEvent {
         chat_mid: String,
         message_id: String,
     },
+    ChatRead {
+        chat_mid: String,
+        message_id: String,
+    },
     CallIncoming {
         call_id: String,
         from: String,

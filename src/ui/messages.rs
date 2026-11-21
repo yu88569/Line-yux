@@ -139,9 +139,13 @@ fn apply_messages_inner(state: &AppState, messages: Vec<MessageInfo>, preserve_s
         *state.msg_list_fp.borrow_mut() = None;
     }
     if messages.is_empty() {
+        *state.opening_unread.borrow_mut() = None;
         state.history.borrow_mut().rendering = false;
         *state.scroll_pinning.borrow_mut() = false;
         set_msg_state(state, "empty", Some(&crate::i18n::t("no_messages")));
+        if let Some(mid) = state.current_chat.borrow().clone() {
+            clear_unread_badge(state, &mid);
+        }
         state.chat_subtitle.set_text(&crate::i18n::t("empty"));
         return;
     }
@@ -158,13 +162,19 @@ fn apply_messages_inner(state: &AppState, messages: Vec<MessageInfo>, preserve_s
         &[("n", &total.to_string())],
     ));
 
-    let last_incoming = messages
-        .iter()
-        .rev()
-        .find(|m| !m.mine)
-        .map(|m| m.id.clone());
-    if let Some(id) = last_incoming.clone() {
-        *state.last_incoming_id.borrow_mut() = Some(id);
+    let mut last_incoming = None;
+    let mut last_message = None;
+    for m in &messages {
+        if !m.mine {
+            record_latest_message_id(&mut last_incoming, &m.id);
+        }
+        record_latest_message_id(&mut last_message, &m.id);
+    }
+    if let Some(id) = last_incoming {
+        record_latest_message_id(&mut state.last_incoming_id.borrow_mut(), &id);
+    }
+    if let Some(id) = last_message {
+        record_latest_message_id(&mut state.last_message_id.borrow_mut(), &id);
     }
 
     let chat_mid = state.current_chat.borrow().clone();
@@ -216,7 +226,9 @@ fn apply_messages_inner(state: &AppState, messages: Vec<MessageInfo>, preserve_s
                                 {
                                     *finish.opening_unread.borrow_mut() = None;
                                     *finish.scroll_pinning.borrow_mut() = false;
-                                    *finish.stick_bottom.borrow_mut() = false;
+                                    let at_bottom =
+                                        is_near_bottom(&finish.message_scroll.vadjustment());
+                                    *finish.stick_bottom.borrow_mut() = at_bottom;
                                     finish.history.borrow_mut().rendering = false;
                                     finish.message_scroll.set_opacity(1.0);
                                 }
@@ -225,7 +237,6 @@ fn apply_messages_inner(state: &AppState, messages: Vec<MessageInfo>, preserve_s
                     }
                 });
             } else {
-                *state_c.opening_unread.borrow_mut() = None;
                 state_c.history.borrow_mut().rendering = false;
                 if *state_c.stick_bottom.borrow() {
                     pin_messages_to_latest(&state_c);
@@ -234,6 +245,9 @@ fn apply_messages_inner(state: &AppState, messages: Vec<MessageInfo>, preserve_s
             if let Some(mid) = chat_mid.as_deref() {
                 mark_chat_read(&state_c, mid);
                 clear_unread_badge(&state_c, mid);
+            }
+            if saved_position.is_none() && unread_id.is_none() {
+                *state_c.opening_unread.borrow_mut() = None;
             }
             return glib::ControlFlow::Break;
         }
@@ -491,9 +505,10 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             .insert(msg.id.clone(), msg.clone());
     }
 
-    if !msg.mine && !msg.id.is_empty() {
-        *state.last_incoming_id.borrow_mut() = Some(msg.id.clone());
+    if !msg.mine {
+        record_latest_message_id(&mut state.last_incoming_id.borrow_mut(), &msg.id);
     }
+    record_latest_message_id(&mut state.last_message_id.borrow_mut(), &msg.id);
     if !msg.id.is_empty() && msg.created_time > 0 {
         state
             .msg_created
@@ -1479,6 +1494,7 @@ pub(super) fn clear_messages(state: &AppState) {
     *state.last_msg_day.borrow_mut() = None;
     state.seen_msg_ids.borrow_mut().clear();
     *state.last_incoming_id.borrow_mut() = None;
+    *state.last_message_id.borrow_mut() = None;
     state.media_queue.borrow_mut().clear();
     *state.media_pumping.borrow_mut() = false;
     *state.new_sep_row.borrow_mut() = None;

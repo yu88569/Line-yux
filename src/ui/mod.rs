@@ -199,6 +199,8 @@ fn build_state(
         last_msg_day: Rc::new(RefCell::new(None)),
         seen_msg_ids: Rc::new(RefCell::new(HashSet::new())),
         last_incoming_id: Rc::new(RefCell::new(None)),
+        last_message_id: Rc::new(RefCell::new(None)),
+        last_marked_read: Rc::new(RefCell::new(HashMap::new())),
         read_upto: Rc::new(RefCell::new(HashMap::new())),
         restored_last_chat: Rc::new(RefCell::new(false)),
         media_queue: Rc::new(RefCell::new(VecDeque::new())),
@@ -293,6 +295,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     wire_composer_narrow(&state);
     wire_actions(&state);
     wire_scroll_pin(&state);
+    wire_window_focus(&state);
     wire_notification_actions(&state);
     sync_tray(&state);
     apply_close_behavior(&state);
@@ -982,13 +985,20 @@ fn wire_scroll_pin(state: &AppState) {
             return;
         }
         history::release_anchor(&s);
-        let target = (adj.upper() - adj.page_size()).max(0.0);
-        let near_bottom = adj.value() + 120.0 >= target;
+        let near_bottom = is_near_bottom(adj);
         if near_bottom {
             if !*s.stick_bottom.borrow() {
                 *s.stick_bottom.borrow_mut() = true;
                 *s.pending_new_below.borrow_mut() = 0;
                 update_jump_banner(&s);
+            }
+            if s.window.is_active()
+                && !s.history.borrow().rendering
+                && let Some(mid) = s.current_chat.borrow().clone()
+                && chat_unread_count(&s, &mid) > 0
+            {
+                mark_chat_read(&s, &mid);
+                clear_unread_badge(&s, &mid);
             }
         } else if *s.stick_bottom.borrow() {
             // Scrollbar drag / key scroll away from bottom.
@@ -1008,6 +1018,15 @@ fn wire_scroll_pin(state: &AppState) {
     let clicked = state.clone();
     click.connect_pressed(move |_, _, _, _| history::release_anchor(&clicked));
     state.message_scroll.add_controller(click);
+}
+
+fn wire_window_focus(state: &AppState) {
+    let s = state.clone();
+    state.window.connect_is_active_notify(move |win| {
+        if win.is_active() {
+            sync_open_chat_read_state(&s);
+        }
+    });
 }
 
 fn send_current(state: &AppState) {
@@ -1077,6 +1096,8 @@ fn send_current(state: &AppState) {
             state.composer.set_text("");
             dismiss_new_marker(state);
             pin_messages_to_latest(state);
+            mark_chat_read(state, &chat_mid);
+            clear_unread_badge(state, &chat_mid);
         }
         Err(e) => toast(
             state,
@@ -1122,6 +1143,7 @@ fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg:
             set_msg_state(state, "list", None);
         }
         append_message(state, &msg, true);
+        clear_unread_badge(state, chat_mid);
     }
     state.pending.borrow_mut().insert(
         req_id,
@@ -1586,6 +1608,7 @@ fn wire_actions(state: &AppState) {
                     invalidate_attachment_session(&s2);
                     locations::fail_pending_locations(&s2);
                     s2.pending.borrow_mut().clear();
+                    s2.last_marked_read.borrow_mut().clear();
                     clear_reply(&s2);
                     *s2.current_chat.borrow_mut() = None;
                     s2.attachment_drafts.borrow_mut().clear();
@@ -1627,6 +1650,7 @@ fn wire_actions(state: &AppState) {
                     invalidate_attachment_session(&s2);
                     locations::fail_pending_locations(&s2);
                     s2.pending.borrow_mut().clear();
+                    s2.last_marked_read.borrow_mut().clear();
                     clear_reply(&s2);
                     *s2.current_chat.borrow_mut() = None;
                     refresh_attachment_drafts(&s2);
@@ -1897,6 +1921,9 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
                 &crate::i18n::tf("fetch_failed", &[("error", &e.to_string())]),
             );
         }
+    }
+    if chat.unread > 0 {
+        clear_sidebar_unread(state, &chat.mid);
     }
     sync_discord_rpc(state);
 }

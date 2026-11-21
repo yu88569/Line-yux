@@ -19,6 +19,8 @@ const scheduler: ListenerScheduler = {
 
 export type ListenerRuntime = {
   getClient: () => Client | null;
+  getMyMid?: () => string;
+  onChatRead?: (chatMid: string, messageId: string) => void | Promise<void>;
   onTransportStalled: () => void;
   scheduler?: ListenerScheduler;
   setListening: (listening: boolean) => void;
@@ -73,15 +75,44 @@ export function createListener(runtime: ListenerRuntime) {
     const ownsSession = () =>
       active === session && runtime.getClient() === client;
     let lastProgressAt = clock.now();
+    const sentMessageIds = new Set<string>();
+    const rememberSentMessageId = (rawId: unknown) => {
+      if (rawId == null) return;
+      const id = String(rawId);
+      if (!id) return;
+      if (sentMessageIds.has(id)) sentMessageIds.delete(id);
+      else if (sentMessageIds.size >= 256) {
+        const oldest = sentMessageIds.values().next().value;
+        if (oldest !== undefined) sentMessageIds.delete(oldest);
+      }
+      sentMessageIds.add(id);
+    };
     runtime.setListening(true);
 
     // Register BEFORE listen() so early ops are not missed.
     const onMessage = async (msg: TalkMessage) => {
       if (!ownsSession()) return;
       try {
+        const rawId = String(
+          (msg.raw as { id?: unknown } | undefined)?.id ?? "",
+        );
+        const fromSendOp = !!rawId && sentMessageIds.delete(rawId);
         const message = await summarizeTalkMessage(msg, { withMedia: false });
         if (!ownsSession()) return;
+        if (fromSendOp) {
+          message.mine = true;
+          if (!message.from) {
+            const selfMid = runtime.getMyMid?.() ?? "";
+            if (selfMid) message.from = selfMid;
+          }
+        }
         const peer = messageChatMid(message);
+        if (
+          fromSendOp && message.reply && typeof message.reply === "object" &&
+          peer
+        ) {
+          (message.reply as Json).chatMid = peer;
+        }
         runtime.invalidateMessages(peer);
         // Advance box cursor so later refetch can see this message.
         storeBoxCursor(peer, {
@@ -105,11 +136,24 @@ export function createListener(runtime: ListenerRuntime) {
       param1?: string;
       param2?: string;
       param3?: string;
+      message?: { id?: string | number; from?: string; to?: string };
     }) => {
       if (!ownsSession()) return;
       try {
         const type = String(op?.type ?? "");
-        if (
+        if (type === "SEND_MESSAGE" || type === "25") {
+          rememberSentMessageId(op.message?.id);
+        } else if (type === "SEND_CHAT_CHECKED" || type === "40") {
+          const chatMid = String(op.param1 ?? "");
+          const messageId = String(op.param2 ?? "");
+          if (chatMid) {
+            void Promise.resolve(runtime.onChatRead?.(chatMid, messageId))
+              .catch(
+                (error) => console.error("[listen chat_read]", chatMid, error),
+              );
+            emitEvent("chat_read", { chatMid, messageId });
+          }
+        } else if (
           type === "NOTIFIED_SEND_REACTION" || type === "SEND_REACTION" ||
           type === "140" || type === "139"
         ) {
@@ -158,6 +202,7 @@ export function createListener(runtime: ListenerRuntime) {
     }, 10_000);
     session.dispose = () => {
       cancelTimer();
+      sentMessageIds.clear();
       client.off("message", onMessage);
       client.off("event", onEvent);
       client.off("call:incoming", onIncoming);

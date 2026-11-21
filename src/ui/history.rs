@@ -276,6 +276,7 @@ pub(super) fn received(state: &AppState, id: u64, chat_mid: &str, result: &serde
     }
     let previous_day = state.last_msg_day.borrow_mut().take();
     let previous_incoming = state.last_incoming_id.borrow().clone();
+    let previous_last_message = state.last_message_id.borrow().clone();
     *state.scroll_pinning.borrow_mut() = true;
     let mut page = page;
     page.sort_by_key(|m| m.created_time);
@@ -286,6 +287,7 @@ pub(super) fn received(state: &AppState, id: u64, chat_mid: &str, result: &serde
     });
     *state.last_msg_day.borrow_mut() = previous_day;
     *state.last_incoming_id.borrow_mut() = previous_incoming;
+    *state.last_message_id.borrow_mut() = previous_last_message;
     {
         let mut history = state.history.borrow_mut();
         history.before = result

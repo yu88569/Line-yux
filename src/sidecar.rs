@@ -907,6 +907,20 @@ fn read_loop<R: std::io::Read>(
                                 .unwrap_or_default()
                                 .to_string(),
                         },
+                        "chat_read" => ProtocolEvent::ChatRead {
+                            chat_mid: resp
+                                .extra
+                                .get("chatMid")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            message_id: resp
+                                .extra
+                                .get("messageId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                        },
                         "call_incoming" => ProtocolEvent::CallIncoming {
                             call_id: resp
                                 .extra
@@ -1162,6 +1176,22 @@ mod login_tests {
                 reason: SessionFailureReason::Recoverable,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn reader_parses_chat_read_event() {
+        let (tx, rx) = async_channel::bounded(4);
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let generation = Arc::new(AtomicU64::new(1));
+        let input = "{\"event\":\"chat_read\",\"chatMid\":\"u-peer\",\"messageId\":\"999888\"}\n";
+        read_loop(input.as_bytes(), tx, pending, generation, 1);
+        assert!(matches!(
+            rx.try_recv().unwrap().1,
+            ProtocolEvent::ChatRead {
+                chat_mid,
+                message_id,
+            } if chat_mid == "u-peer" && message_id == "999888"
         ));
     }
 }

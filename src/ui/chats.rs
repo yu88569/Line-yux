@@ -48,6 +48,21 @@ fn refresh_chat_visibility(state: &AppState) {
 }
 
 pub(super) fn apply_chats(state: &AppState, mut chats: Vec<ChatInfo>, cached: bool) {
+    let active_open_mid = (state.window.is_active()
+        && *state.stick_bottom.borrow()
+        && !state.history.borrow().rendering)
+        .then(|| state.current_chat.borrow().clone())
+        .flatten();
+    let mut needs_server_mark_read: Option<(String, i64)> = None;
+    if let Some(open_mid) = active_open_mid.as_deref() {
+        for chat in &mut chats {
+            if chat.mid == open_mid && chat.unread > 0 {
+                needs_server_mark_read = Some((open_mid.to_string(), chat.unread));
+                chat.unread = 0;
+            }
+        }
+    }
+
     sort_chats(&mut chats, &state.config.borrow());
     clear_list(&state.chat_list);
     state.chat_avatars.borrow_mut().clear();
@@ -104,6 +119,9 @@ pub(super) fn apply_chats(state: &AppState, mut chats: Vec<ChatInfo>, cached: bo
         update_mute_btn(state, effective_chat_mute(state, mid));
     }
     refresh_chat_visibility(state);
+    if let Some((mid, reported_unread)) = needs_server_mark_read {
+        mark_chat_read_with_unread(state, &mid, reported_unread);
+    }
 }
 
 pub(super) fn select_sidebar_chat(state: &AppState, mid: Option<&str>) {
@@ -533,20 +551,100 @@ pub(super) fn msg_id_le(a: &str, b: &str) -> bool {
     }
 }
 
+pub(super) fn is_real_message_id(id: &str) -> bool {
+    !id.is_empty() && !id.starts_with("pending-")
+}
+
+pub(super) fn record_latest_message_id(slot: &mut Option<String>, candidate: &str) {
+    if !is_real_message_id(candidate) {
+        return;
+    }
+    if slot
+        .as_deref()
+        .is_none_or(|prev| !msg_id_le(candidate, prev))
+    {
+        *slot = Some(candidate.to_string());
+    }
+}
+
+pub(super) fn is_near_bottom(adj: &gtk::Adjustment) -> bool {
+    let target = (adj.upper() - adj.page_size()).max(0.0);
+    adj.value() + 120.0 >= target
+}
+
+fn should_send_mark_read(last_marked: Option<&str>, candidate: &str, chat_unread: i64) -> bool {
+    if !is_real_message_id(candidate) {
+        return false;
+    }
+    if chat_unread > 0 {
+        return true;
+    }
+    last_marked.is_none_or(|prev| !msg_id_le(candidate, prev))
+}
+
+pub(super) fn chat_unread_count(state: &AppState, chat_mid: &str) -> i64 {
+    state
+        .chats
+        .borrow()
+        .iter()
+        .find(|c| c.mid == chat_mid)
+        .map_or(0, |c| c.unread)
+}
+
 pub(super) fn mark_chat_read(state: &AppState, chat_mid: &str) {
+    let unread = chat_unread_count(state, chat_mid).max(state.opening_unread.borrow().unwrap_or(0));
+    mark_chat_read_with_unread(state, chat_mid, unread);
+}
+
+fn mark_chat_read_with_unread(state: &AppState, chat_mid: &str, chat_unread: i64) {
     if !state.config.borrow().auto_mark_read {
         return;
     }
-    let Some(last_id) = state.last_incoming_id.borrow().clone() else {
-        return;
-    };
-    if last_id.is_empty() {
+    if state.current_chat.borrow().as_deref() != Some(chat_mid) {
         return;
     }
-    let _ = state.sidecar.mark_read(chat_mid, &last_id);
+    let last_id = state
+        .last_message_id
+        .borrow()
+        .clone()
+        .or_else(|| state.last_incoming_id.borrow().clone());
+    let Some(last_id) = last_id else {
+        return;
+    };
+    let prev_marked = state.last_marked_read.borrow().get(chat_mid).cloned();
+    if !should_send_mark_read(prev_marked.as_deref(), &last_id, chat_unread) {
+        return;
+    }
+    if state.sidecar.mark_read(chat_mid, &last_id).is_ok() {
+        let mut marked = state.last_marked_read.borrow_mut();
+        let entry = marked.entry(chat_mid.to_string()).or_default();
+        if entry.is_empty() || !msg_id_le(&last_id, entry) {
+            *entry = last_id;
+        }
+    }
 }
 
-pub(super) fn clear_unread_badge(state: &AppState, chat_mid: &str) {
+pub(super) fn sync_open_chat_read_state(state: &AppState) {
+    if !state.window.is_active() || state.history.borrow().rendering {
+        return;
+    }
+    let Some(mid) = state.current_chat.borrow().clone() else {
+        return;
+    };
+    if !*state.scroll_pinning.borrow() && is_near_bottom(&state.message_scroll.vadjustment()) {
+        if !*state.stick_bottom.borrow() {
+            *state.stick_bottom.borrow_mut() = true;
+            *state.pending_new_below.borrow_mut() = 0;
+            update_jump_banner(state);
+        }
+    }
+    if *state.stick_bottom.borrow() {
+        mark_chat_read(state, &mid);
+        clear_unread_badge(state, &mid);
+    }
+}
+
+pub(super) fn clear_sidebar_unread(state: &AppState, chat_mid: &str) {
     if let Some(chat) = state
         .chats
         .borrow_mut()
@@ -559,12 +657,16 @@ pub(super) fn clear_unread_badge(state: &AppState, chat_mid: &str) {
         badge.set_text("");
         badge.set_visible(false);
     }
+    refresh_tray_menu(state);
+}
+
+pub(super) fn clear_unread_badge(state: &AppState, chat_mid: &str) {
+    clear_sidebar_unread(state, chat_mid);
     if state.current_chat.borrow().as_deref() == Some(chat_mid) {
         state
             .chat_subtitle
             .set_text(&crate::i18n::t("conversation"));
     }
-    refresh_tray_menu(state);
 }
 
 pub(super) fn bump_unread(state: &AppState, chat_mid: &str) {
@@ -1041,5 +1143,31 @@ mod preference_tests {
         assert_eq!(chats[1].mid, "u-new");
         assert_eq!(promote_chat(&mut chats, &cfg, "u-old"), Some((2, 2)));
         assert_eq!(promote_chat(&mut chats, &cfg, "missing"), None);
+    }
+
+    #[test]
+    fn unread_helpers_ignore_placeholders_and_dedupe_read_markers() {
+        assert!(!is_real_message_id(""));
+        assert!(!is_real_message_id("pending-12"));
+        assert!(is_real_message_id("640112017961124386"));
+
+        let mut latest = None;
+        record_latest_message_id(&mut latest, "");
+        record_latest_message_id(&mut latest, "pending-1");
+        assert_eq!(latest, None);
+        record_latest_message_id(&mut latest, "100");
+        assert_eq!(latest.as_deref(), Some("100"));
+        record_latest_message_id(&mut latest, "99");
+        assert_eq!(latest.as_deref(), Some("100"));
+        record_latest_message_id(&mut latest, "101");
+        assert_eq!(latest.as_deref(), Some("101"));
+
+        assert!(!should_send_mark_read(None, "", 3));
+        assert!(!should_send_mark_read(None, "pending-5", 3));
+        assert!(should_send_mark_read(None, "100", 0));
+        assert!(!should_send_mark_read(Some("100"), "100", 0));
+        assert!(!should_send_mark_read(Some("100"), "99", 0));
+        assert!(should_send_mark_read(Some("100"), "100", 2));
+        assert!(should_send_mark_read(Some("100"), "101", 0));
     }
 }

@@ -275,26 +275,32 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     ensure_new_message_separator(state);
                 }
                 append_message(state, &msg, true);
-                if was_stuck {
-                    pin_messages_to_latest(state);
-                    if !msg.mine {
-                        // Only suppress alerts when this chat is open AND focused.
-                        if window_focused {
-                            mark_chat_read(state, &peer);
-                            clear_unread_badge(state, &peer);
-                        } else {
-                            bump_unread(state, &peer);
-                            notify_incoming(state, &msg, &peer);
-                        }
+                if msg.mine {
+                    if was_stuck {
+                        pin_messages_to_latest(state);
                     }
-                } else if !msg.mine {
+                    mark_chat_read(state, &peer);
+                    clear_unread_badge(state, &peer);
+                } else if was_stuck {
+                    pin_messages_to_latest(state);
+                    // Only suppress alerts when this chat is open AND focused.
+                    if window_focused {
+                        mark_chat_read(state, &peer);
+                        clear_unread_badge(state, &peer);
+                    } else {
+                        bump_unread(state, &peer);
+                        notify_incoming(state, &msg, &peer);
+                    }
+                } else {
                     let n = state.pending_new_below.borrow().saturating_add(1);
                     *state.pending_new_below.borrow_mut() = n;
                     update_jump_banner(state);
                     bump_unread(state, &peer);
                     notify_incoming(state, &msg, &peer);
                 }
-            } else if !msg.mine {
+            } else if msg.mine {
+                clear_unread_badge(state, &peer);
+            } else {
                 bump_unread(state, &peer);
                 notify_incoming(state, &msg, &peer);
             }
@@ -321,6 +327,21 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             message_id,
         } => {
             apply_peer_read(state, &chat_mid, &message_id);
+        }
+        ProtocolEvent::ChatRead {
+            chat_mid,
+            message_id,
+        } => {
+            if !chat_mid.is_empty() {
+                if is_real_message_id(&message_id) {
+                    let mut marked = state.last_marked_read.borrow_mut();
+                    let entry = marked.entry(chat_mid.clone()).or_default();
+                    if entry.is_empty() || msg_id_le(entry, &message_id) {
+                        *entry = message_id;
+                    }
+                }
+                clear_unread_badge(state, &chat_mid);
+            }
         }
         ProtocolEvent::Chats { chats, cached } => {
             apply_chats(state, chats, cached);
@@ -745,6 +766,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         } else {
                             apply_messages(state, messages);
                         }
+                    } else {
+                        mark_chat_read(state, &chat_mid);
+                        clear_unread_badge(state, &chat_mid);
+                        *state.opening_unread.borrow_mut() = None;
                     }
                 }
                 Some(Pending::FetchOlder { chat_mid }) => {
@@ -789,6 +814,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         }
                         append_message(state, &msg, true);
                         pin_messages_to_latest(state);
+                        mark_chat_read(state, &chat_mid);
+                        clear_unread_badge(state, &chat_mid);
                     }
                 }
                 Some(Pending::LocationSend { chat_mid, ui }) => {
@@ -800,6 +827,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                             set_msg_state(state, "list", None);
                             append_message(state, &msg, true);
                             pin_messages_to_latest(state);
+                            mark_chat_read(state, &chat_mid);
+                            clear_unread_badge(state, &chat_mid);
                         }
                     } else {
                         ui.failed(&crate::i18n::t("location_unavailable"));

@@ -183,7 +183,14 @@ export function createCommandService(runtime: CommandRuntime) {
       });
       if (chatCache) {
         const row = chatCache.chats.find((x) => x.mid === chatMid);
-        if (row) row.unread = 0;
+        if (row && row.unread !== 0) {
+          row.unread = 0;
+          try {
+            await atomicWriteJson(chatCachePath, chatCache);
+          } catch (error) {
+            console.error("[mark_read-cache]", chatMid, error);
+          }
+        }
       }
       ok(id, { marked: true, chatMid, lastMessageId: String(lastMessageId) });
     } catch (e) {
@@ -359,7 +366,7 @@ export function createCommandService(runtime: CommandRuntime) {
       // 1) Recent boxes (cheap + ordering)
       try {
         const boxes = await client!.base.talk.getMessageBoxes({
-          messageBoxListRequest: {},
+          messageBoxListRequest: { withUnreadCount: true },
         });
         for (const box of boxes.messageBoxes ?? []) {
           const mid = String(box.id ?? "");
