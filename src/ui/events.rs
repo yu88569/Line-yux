@@ -70,26 +70,72 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             });
             on_logged_in(state, &result);
         }
-        ProtocolEvent::SessionFailed { error } => {
+        ProtocolEvent::SessionReconnecting {
+            attempt,
+            retry_in_ms,
+            error,
+        } => {
             restore_attachment_requests(state);
             locations::fail_pending_locations(state);
             *state.session_ready.borrow_mut() = false;
             hide_upload_progress(state);
-            let msg = if error.contains("relogin_android_required") {
-                crate::i18n::t("relogin_android_required")
-            } else if error.contains("NOT_AUTHORIZED_DEVICE")
-                || error.contains("V3_TOKEN_CLIENT_LOGGED_OUT")
-                || error.contains("LOGGED_OUT")
-            {
-                crate::i18n::t("logged_out_hint")
-            } else {
-                error.clone()
-            };
-            show_login(state, &msg);
-            state.login.retry_btn.set_visible(true);
-            *state.discord_session_start.borrow_mut() = None;
+            tracing::warn!(attempt, retry_in_ms, %error, "session restore retrying");
+            if saved_auth_exists(&state.data_dir) {
+                state.stack.set_visible_child_name("shell");
+            }
+            state.side_spinner.set_spinning(true);
+            state.side_spinner.set_visible(true);
+            state.status.set_text(&crate::i18n::tf(
+                "session_reconnecting",
+                &[("attempt", &attempt.to_string())],
+            ));
+            if attempt == 2 {
+                let notice = libadwaita::Toast::new(&crate::i18n::t("session_reconnect_notice"));
+                notice.set_button_label(Some(&crate::i18n::t("retry")));
+                notice.set_action_name(Some("app.retry-protocol"));
+                state.toast_overlay.add_toast(notice);
+            }
             sync_discord_rpc(state);
-            toast(state, &msg);
+        }
+        ProtocolEvent::SessionFailed { error, reason } => {
+            restore_attachment_requests(state);
+            locations::fail_pending_locations(state);
+            *state.session_ready.borrow_mut() = false;
+            hide_upload_progress(state);
+            if should_preserve_shell_on_session_failure(reason, saved_auth_exists(&state.data_dir))
+            {
+                tracing::warn!(%error, "session restore paused; keeping saved auth");
+                state.stack.set_visible_child_name("shell");
+                state.side_spinner.set_spinning(false);
+                state.side_spinner.set_visible(false);
+                let offline_msg = crate::i18n::t("session_offline");
+                state.status.set_text(&offline_msg);
+                let notice = libadwaita::Toast::new(&offline_msg);
+                notice.set_button_label(Some(&crate::i18n::t("retry")));
+                notice.set_action_name(Some("app.retry-protocol"));
+                notice.set_timeout(0);
+                state.toast_overlay.add_toast(notice);
+                sync_discord_rpc(state);
+            } else {
+                let msg = if error.contains("relogin_android_required") {
+                    crate::i18n::t("relogin_android_required")
+                } else if error.contains("NOT_AUTHORIZED_DEVICE")
+                    || error.contains("NOT_AUTHORIZED_SESSION")
+                    || error.contains("NOT_AVAILABLE_SESSION")
+                    || error.contains("NOT_AUTHENTICATED")
+                    || error.contains("V3_TOKEN_CLIENT_LOGGED_OUT")
+                    || error.contains("LOGGED_OUT")
+                {
+                    crate::i18n::t("logged_out_hint")
+                } else {
+                    error.clone()
+                };
+                show_login(state, &msg);
+                state.login.retry_btn.set_visible(true);
+                *state.discord_session_start.borrow_mut() = None;
+                sync_discord_rpc(state);
+                toast(state, &msg);
+            }
         }
         ProtocolEvent::Qr { url } => {
             if state.login.method.get() != login::LoginMethod::Qr {
@@ -969,10 +1015,43 @@ pub(super) fn show_shell_restoring(state: &AppState) {
     }
 }
 
+pub(super) fn should_preserve_shell_on_session_failure(
+    reason: crate::protocol::SessionFailureReason,
+    has_saved_auth: bool,
+) -> bool {
+    reason == crate::protocol::SessionFailureReason::Recoverable && has_saved_auth
+}
+
 pub(super) fn show_login(state: &AppState, hint: &str) {
     clear_reply(state);
     state.stack.set_visible_child_name("login");
     login::show_method_stage(&state.login);
     state.login.hint.set_text(hint);
     sync_discord_rpc(state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_preserve_shell_on_session_failure;
+    use crate::protocol::SessionFailureReason;
+
+    #[test]
+    fn shell_is_preserved_only_when_recoverable_and_saved_auth_exists() {
+        assert!(should_preserve_shell_on_session_failure(
+            SessionFailureReason::Recoverable,
+            true
+        ));
+        assert!(!should_preserve_shell_on_session_failure(
+            SessionFailureReason::Recoverable,
+            false
+        ));
+        assert!(!should_preserve_shell_on_session_failure(
+            SessionFailureReason::Revoked,
+            true
+        ));
+        assert!(!should_preserve_shell_on_session_failure(
+            SessionFailureReason::Revoked,
+            false
+        ));
+    }
 }

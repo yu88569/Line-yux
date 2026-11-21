@@ -78,3 +78,33 @@ for (
     assertEquals(requests, ["/enc"]);
   });
 }
+
+Deno.test("LEGY probe timeout retries profile over HTTPS on the same session", async () => {
+  const requests: string[] = [];
+  const client = await loginWithAuthToken(
+    token,
+    {
+      device: "ANDROIDSECONDARY",
+      fetch: (request) => {
+        const { pathname } = new URL(request.url);
+        requests.push(pathname);
+        if (pathname === "/enc") {
+          return new Promise((_resolve, reject) => {
+            request.signal.addEventListener(
+              "abort",
+              () => reject(request.signal.reason),
+              { once: true },
+            );
+          });
+        }
+        assertEquals(new URL(request.url).protocol, "https:");
+        assertEquals(request.headers.get("x-line-access"), token);
+        return Promise.resolve(profileReply());
+      },
+    },
+    { legyProbeTimeoutMs: 20 },
+  );
+  assertEquals(client.base.profile?.mid, "u-test");
+  await client.base.talk.getProfile();
+  assertEquals(requests, ["/enc", "/S4", "/S4"]);
+});

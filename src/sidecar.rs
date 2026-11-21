@@ -1,4 +1,4 @@
-use crate::protocol::{ProtocolEvent, Request, Response};
+use crate::protocol::{ProtocolEvent, Request, Response, SessionFailureReason};
 use anyhow::{Context, Result, anyhow};
 use async_channel::{Receiver, Sender};
 use serde_json::{Value, json};
@@ -556,6 +556,27 @@ fn which(bin: &str) -> Option<PathBuf> {
     })
 }
 
+fn parse_session_failure_reason(reason: Option<&str>, error: &str) -> SessionFailureReason {
+    match reason {
+        Some("revoked") => SessionFailureReason::Revoked,
+        Some("recoverable" | "transient" | "unknown") => SessionFailureReason::Recoverable,
+        _ => {
+            if error.contains("relogin_android_required")
+                || error.contains("NOT_AUTHORIZED_DEVICE")
+                || error.contains("NOT_AUTHORIZED_SESSION")
+                || error.contains("NOT_AVAILABLE_SESSION")
+                || error.contains("NOT_AUTHENTICATED")
+                || error.contains("V3_TOKEN_CLIENT_LOGGED_OUT")
+                || error.contains("LOGGED_OUT")
+            {
+                SessionFailureReason::Revoked
+            } else {
+                SessionFailureReason::Recoverable
+            }
+        }
+    }
+}
+
 fn read_loop<R: std::io::Read>(
     stdout: R,
     tx: Sender<(u64, ProtocolEvent)>,
@@ -624,14 +645,38 @@ fn read_loop<R: std::io::Read>(
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string()),
                         },
-                        "session_failed" => ProtocolEvent::SessionFailed {
+                        "session_reconnecting" => ProtocolEvent::SessionReconnecting {
+                            attempt: resp
+                                .extra
+                                .get("attempt")
+                                .and_then(|v| v.as_u64())
+                                .and_then(|n| u32::try_from(n).ok())
+                                .unwrap_or(1),
+                            retry_in_ms: resp
+                                .extra
+                                .get("retryInMs")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
                             error: resp
                                 .extra
                                 .get("error")
                                 .and_then(|v| v.as_str())
-                                .unwrap_or("session restore failed")
+                                .unwrap_or("reconnecting")
                                 .to_string(),
                         },
+                        "session_failed" => {
+                            let error = resp
+                                .extra
+                                .get("error")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("session restore failed")
+                                .to_string();
+                            let reason = parse_session_failure_reason(
+                                resp.extra.get("reason").and_then(|v| v.as_str()),
+                                &error,
+                            );
+                            ProtocolEvent::SessionFailed { error, reason }
+                        }
                         "qr" => ProtocolEvent::Qr {
                             url: resp
                                 .extra
@@ -1075,5 +1120,48 @@ mod login_tests {
         ));
         assert!(rx.try_recv().is_err());
         assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reader_parses_session_reconnecting_and_failure_reasons() {
+        let (tx, rx) = async_channel::bounded(10);
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let generation = Arc::new(AtomicU64::new(1));
+        let input = concat!(
+            "{\"event\":\"session_reconnecting\",\"attempt\":2,\"retryInMs\":5000,\"error\":\"TimeoutError\"}\n",
+            "{\"event\":\"session_failed\",\"error\":\"unexpected\",\"reason\":\"recoverable\"}\n",
+            "{\"event\":\"session_failed\",\"error\":\"NOT_AUTHORIZED_DEVICE\",\"reason\":\"revoked\"}\n",
+            "{\"event\":\"session_failed\",\"error\":\"dns error\"}\n",
+        );
+        read_loop(input.as_bytes(), tx, pending, generation, 1);
+        assert!(matches!(
+            rx.try_recv().unwrap().1,
+            ProtocolEvent::SessionReconnecting {
+                attempt: 2,
+                retry_in_ms: 5000,
+                ..
+            }
+        ));
+        assert!(matches!(
+            rx.try_recv().unwrap().1,
+            ProtocolEvent::SessionFailed {
+                reason: SessionFailureReason::Recoverable,
+                ..
+            }
+        ));
+        assert!(matches!(
+            rx.try_recv().unwrap().1,
+            ProtocolEvent::SessionFailed {
+                reason: SessionFailureReason::Revoked,
+                ..
+            }
+        ));
+        assert!(matches!(
+            rx.try_recv().unwrap().1,
+            ProtocolEvent::SessionFailed {
+                reason: SessionFailureReason::Recoverable,
+                ..
+            }
+        ));
     }
 }

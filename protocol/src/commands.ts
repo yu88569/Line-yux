@@ -46,7 +46,8 @@ type BoxCursor = { messageId: bigint | number; deliveredTime: bigint | number };
 
 export type CommandRuntime = {
   getClient: () => Client | null;
-  setClient: (client: Client) => void;
+  setClient: (client: Client, device?: LineDevice) => void;
+  cancelBootRestore?: () => void;
   isListening: () => boolean;
   setAuthDead: (dead: boolean) => void;
   getChatCache: () => ChatCache | null;
@@ -196,6 +197,7 @@ export function createCommandService(runtime: CommandRuntime) {
   }
 
   async function doLoginQr(id: number | string | null) {
+    runtime.cancelBootRestore?.();
     runtime.setAuthDead(false);
     const storage = new FileStorage(storagePath);
     // Docs: QR defaults to ANDROIDSECONDARY for call-capable sessions.
@@ -209,7 +211,7 @@ export function createCommandService(runtime: CommandRuntime) {
       },
       { device, version: LINE_VERSION, legy: runtime.lineLegy, storage },
     );
-    runtime.setClient(client);
+    runtime.setClient(client, device);
     await saveAuth(client.authToken, device);
     const profile = client.base.profile ?? await client.getMyProfile();
     patchE2eeGuards();
@@ -224,6 +226,7 @@ export function createCommandService(runtime: CommandRuntime) {
       return;
     }
     try {
+      runtime.cancelBootRestore?.();
       runtime.setAuthDead(false);
       const device = LINE_DEVICE === "DESKTOPWIN"
         ? "ANDROIDSECONDARY"
@@ -240,7 +243,7 @@ export function createCommandService(runtime: CommandRuntime) {
           storage: new FileStorage(storagePath),
         },
       );
-      runtime.setClient(client);
+      runtime.setClient(client, device);
       await saveAuth(client.authToken, device);
       const profile = client.base.profile ?? await client.getMyProfile();
       patchE2eeGuards();
@@ -256,6 +259,7 @@ export function createCommandService(runtime: CommandRuntime) {
   }
 
   async function doLoginToken(id: number | string | null, token?: string) {
+    runtime.cancelBootRestore?.();
     runtime.setAuthDead(false);
     let client = runtime.getClient();
     // Already restored (e.g. boot auto-login) — just return the profile.
@@ -293,7 +297,7 @@ export function createCommandService(runtime: CommandRuntime) {
       legy: runtime.lineLegy,
       storage,
     });
-    runtime.setClient(client);
+    runtime.setClient(client, device);
     await saveAuth(client.authToken, device);
     const profile = client.base.profile ?? await client.getMyProfile();
     patchE2eeGuards();

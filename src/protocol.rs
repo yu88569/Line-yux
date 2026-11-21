@@ -227,6 +227,12 @@ impl MessageInfo {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionFailureReason {
+    Revoked,
+    Recoverable,
+}
+
 #[derive(Debug, Clone)]
 pub enum ProtocolEvent {
     Ready {
@@ -240,8 +246,14 @@ pub enum ProtocolEvent {
         avatar_path: Option<String>,
         picture_url: Option<String>,
     },
+    SessionReconnecting {
+        attempt: u32,
+        retry_in_ms: u64,
+        error: String,
+    },
     SessionFailed {
         error: String,
+        reason: SessionFailureReason,
     },
     Qr {
         url: String,

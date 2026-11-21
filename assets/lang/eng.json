@@ -495,5 +495,8 @@
   "history_load": "Load older messages",
   "history_loading": "Loading older messages…",
   "history_retry": "Could not load older messages. Click to retry",
-  "history_end": "No older messages available"
+  "history_end": "No older messages available",
+  "session_reconnecting": "Reconnecting to LINE (attempt {attempt})…",
+  "session_offline": "Offline. Saved session kept.",
+  "session_reconnect_notice": "Connection interrupted. Retrying automatically…"
 }

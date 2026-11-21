@@ -669,6 +669,9 @@ fn wire_notification_actions(state: &AppState) {
     let s = state.clone();
     retry.connect_activate(move |_, _| {
         *s.recovery_attempts.borrow_mut() = 0;
+        if saved_auth_exists(&s.data_dir) {
+            show_shell_restoring(&s);
+        }
         recover_sidecar(&s);
     });
     state.app.add_action(&retry);
@@ -1510,7 +1513,13 @@ fn wire_actions(state: &AppState) {
 
     let s = state.clone();
     state.login.retry_btn.connect_clicked(move |_| {
-        restart_login(&s);
+        if saved_auth_exists(&s.data_dir) {
+            *s.recovery_attempts.borrow_mut() = 0;
+            show_shell_restoring(&s);
+            recover_sidecar(&s);
+        } else {
+            restart_login(&s);
+        }
     });
 
     let s = state.clone();

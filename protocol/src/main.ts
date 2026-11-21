@@ -36,6 +36,12 @@ import {
 } from "./chat_identity.ts";
 import { createListener } from "./listener.ts";
 import { createMessageView } from "./message_view.ts";
+import {
+  bindAuthTokenPersistence,
+  classifySessionError,
+  errorSummary,
+  restoreSessionWithRetry,
+} from "./session_recovery.ts";
 
 import {
   ALBUM_METADATA_VERSION,
@@ -160,36 +166,27 @@ function fail(id: number | string | null, error: string) {
   emit({ id, ok: false, error });
 }
 
-// linejs listen() async loops can reject without a caller catch (e.g. logged-out token).
+// linejs listen() async loops can reject without a caller catch (e.g. logged-out token or noop timeout).
 let authDead = false;
 globalThis.addEventListener("unhandledrejection", (ev) => {
   const reason = (ev as PromiseRejectionEvent).reason;
-  let msg = "";
-  if (reason instanceof Error) {
-    msg = reason.message;
-  } else if (typeof reason === "string") {
-    msg = reason;
-  } else {
-    try {
-      msg = JSON.stringify(reason ?? "");
-    } catch {
-      msg = String(reason ?? "unhandledrejection");
-    }
-  }
-  const loggedOut = msg.includes("NOT_AUTHORIZED") ||
-    msg.includes("LOGGED_OUT") ||
-    msg.includes("AUTHENTICATION") ||
-    msg.includes("V3_TOKEN_CLIENT_LOGGED_OUT") ||
-    msg.includes("NOT_AUTHORIZED_DEVICE");
-  if (loggedOut) {
+  const msg = errorSummary(reason);
+  const classified = classifySessionError(reason, "runtime");
+  if (classified.kind === "revoked") {
     ev.preventDefault();
     if (authDead) return;
     authDead = true;
+    cancelBootRestore();
     cancelBackgroundWork();
-    client = null;
+    activateClient(null);
     console.error("[auth] session ended:", msg);
     void clearAuth();
-    emitEvent("session_failed", { error: msg });
+    emitEvent("session_failed", { error: msg, reason: "revoked" });
+    return;
+  }
+  if (classified.kind === "transient") {
+    ev.preventDefault();
+    console.warn("[unhandledrejection:transient]", msg);
     return;
   }
   console.error("[unhandledrejection]", msg);
@@ -198,6 +195,29 @@ globalThis.addEventListener("unhandledrejection", (ev) => {
 let client: Client | null = null;
 let listening = false;
 let callDeviceId: Promise<string> | undefined;
+let disposeTokenPersistence: (() => void) | null = null;
+let bootRestoreController: AbortController | null = null;
+
+function cancelBootRestore() {
+  bootRestoreController?.abort();
+  bootRestoreController = null;
+}
+
+function activateClient(next: Client | null, device: LineDevice = LINE_DEVICE) {
+  disposeTokenPersistence?.();
+  disposeTokenPersistence = null;
+  if (client !== next) listener.stop();
+  client = next;
+  if (next) {
+    disposeTokenPersistence = bindAuthTokenPersistence(next, {
+      initialToken: next.authToken,
+      isActive: () => client === next && !authDead,
+      save: (token) => saveAuth(token, device),
+      onError: (error) =>
+        console.error("[auth] save refreshed token failed:", error),
+    });
+  }
+}
 
 calls.configureCallRuntime({
   getClient: () => client,
@@ -359,10 +379,8 @@ const listener = createListener({
 
 const commands = createCommandService({
   getClient: () => client,
-  setClient: (next) => {
-    if (client !== next) listener.stop();
-    client = next;
-  },
+  setClient: (next, device) => activateClient(next, device ?? LINE_DEVICE),
+  cancelBootRestore,
   isListening: () => listening,
   setAuthDead: (dead) => {
     authDead = dead;
@@ -442,6 +460,8 @@ function bumpMediaEpoch(chatMid: string): number {
 /** Bumped to cancel hydrateMedia / hydratePreviews after logout / token kick. */
 let workGen = 0;
 function cancelBackgroundWork() {
+  disposeTokenPersistence?.();
+  disposeTokenPersistence = null;
   listener.stop();
   workGen++;
   void calls.shutdownCalls();
@@ -2148,13 +2168,14 @@ async function handle(req: Json) {
         break;
       }
       case "logout":
+        cancelBootRestore();
         cancelBackgroundWork();
+        activateClient(null);
         await calls.shutdownCalls();
         stickers.resetOwnedCache();
         try {
           await clearAuth();
         } catch { /* ignore */ }
-        client = null;
         listening = false;
         chatCache = null;
         msgCache.clear();
@@ -2183,6 +2204,77 @@ emitEvent("ready", {
   device: needsAndroidRelogin ? "" : bootDevice,
 });
 
+async function runBootRestore(
+  bootAuth: string,
+  device: "ANDROID" | "ANDROIDSECONDARY",
+) {
+  cancelBootRestore();
+  const controller = new AbortController();
+  bootRestoreController = controller;
+  const result = await restoreSessionWithRetry({
+    signal: controller.signal,
+    attempt: async () => {
+      const storage = new FileStorage(storagePath);
+      const next = await loginWithAuthToken(bootAuth, {
+        device,
+        version: LINE_VERSION,
+        legy: lineLegy,
+        storage,
+      });
+      const profile = next.base.profile ?? await next.getMyProfile();
+      return { client: next, profile };
+    },
+    onRetry: ({ attempt, retryInMs, error }) => {
+      console.warn(
+        `[boot restore] transient failure (attempt ${attempt}, retry in ${retryInMs}ms):`,
+        error,
+      );
+      emitEvent("session_reconnecting", { attempt, retryInMs, error });
+    },
+  });
+  if (bootRestoreController === controller) {
+    bootRestoreController = null;
+  }
+  switch (result.kind) {
+    case "aborted":
+      return;
+    case "restored": {
+      if (controller.signal.aborted) return;
+      authDead = false;
+      activateClient(result.value.client, device);
+      await saveAuth(result.value.client.authToken, device);
+      if (controller.signal.aborted || client !== result.value.client) return;
+      patchE2eeGuards();
+      listener.start();
+      emitEvent("session", await myProfilePayload(result.value.profile));
+      return;
+    }
+    case "revoked":
+      authDead = true;
+      console.error("[boot restore] session revoked:", result.error);
+      await clearAuth();
+      emitEvent("session_failed", {
+        error: result.error,
+        reason: "revoked",
+      });
+      return;
+    case "recoverable_failed":
+      console.error(
+        "[boot restore] failed (keeping saved auth):",
+        result.error,
+      );
+      emitEvent("session_failed", {
+        error: result.error,
+        reason: "recoverable",
+      });
+      return;
+    default: {
+      const _exhaustive: never = result;
+      return _exhaustive;
+    }
+  }
+}
+
 // Legacy DESKTOPWIN tokens cannot do reliable PLANET calls (docs require ANDROID*).
 if (needsAndroidRelogin) {
   console.error(
@@ -2191,30 +2283,13 @@ if (needsAndroidRelogin) {
   await clearAuth();
   emitEvent("session_failed", {
     error: "relogin_android_required",
+    reason: "revoked",
   });
 } else if (bootAuth) {
-  try {
-    const storage = new FileStorage(storagePath);
-    const device = bootDevice === "ANDROID" || bootDevice === "ANDROIDSECONDARY"
-      ? bootDevice
-      : "ANDROIDSECONDARY";
-    client = await loginWithAuthToken(bootAuth, {
-      device,
-      version: LINE_VERSION,
-      legy: lineLegy,
-      storage,
-    });
-    await saveAuth(client.authToken, device);
-    const profile = client.base.profile ?? await client.getMyProfile();
-    patchE2eeGuards();
-    listener.start();
-    emitEvent("session", await myProfilePayload(profile));
-  } catch (e) {
-    console.error("[boot restore]", e);
-    emitEvent("session_failed", {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
+  const device = bootDevice === "ANDROID" || bootDevice === "ANDROIDSECONDARY"
+    ? bootDevice
+    : "ANDROIDSECONDARY";
+  void runBootRestore(bootAuth, device);
 }
 
 const decoder = new TextDecoder();
