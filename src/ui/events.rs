@@ -77,6 +77,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         } => {
             restore_attachment_requests(state);
             locations::fail_pending_locations(state);
+            message_share::fail_pending_shares(state);
             *state.session_ready.borrow_mut() = false;
             hide_upload_progress(state);
             tracing::warn!(attempt, retry_in_ms, %error, "session restore retrying");
@@ -100,6 +101,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         ProtocolEvent::SessionFailed { error, reason } => {
             restore_attachment_requests(state);
             locations::fail_pending_locations(state);
+            message_share::fail_pending_shares(state);
             *state.session_ready.borrow_mut() = false;
             hide_upload_progress(state);
             if should_preserve_shell_on_session_failure(reason, saved_auth_exists(&state.data_dir))
@@ -707,6 +709,14 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 if let Some(Pending::LocationSend { ui, .. }) = pending.as_ref() {
                     ui.failed(error.as_deref().unwrap_or("request failed"));
                 }
+                if let Some(Pending::SharePrepareMedia { batch_id, .. }) = pending.as_ref() {
+                    message_share::on_media_prepare_failed(state, *batch_id, error.as_deref());
+                    return;
+                }
+                if let Some(Pending::ShareSend { batch_id, .. }) = pending.as_ref() {
+                    message_share::on_item_send_failed(state, *batch_id, error.as_deref());
+                    return;
+                }
                 let err = error.as_deref().unwrap_or("request failed");
                 if err.contains("sticker_not_owned") || err.contains("USER_NOT_STICKER_OWNER") {
                     toast(state, &crate::i18n::t("sticker_not_owned"));
@@ -788,13 +798,13 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     }
                 }
                 Some(Pending::React { chat_mid }) => {
-                    if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str()) {
-                        if let Ok(id) = state.sidecar.refresh_messages(&chat_mid, 40) {
-                            state
-                                .pending
-                                .borrow_mut()
-                                .insert(id, Pending::RefreshReactions { chat_mid });
-                        }
+                    if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str())
+                        && let Ok(id) = state.sidecar.refresh_messages(&chat_mid, 40)
+                    {
+                        state
+                            .pending
+                            .borrow_mut()
+                            .insert(id, Pending::RefreshReactions { chat_mid });
                     }
                 }
                 Some(Pending::Send {
@@ -839,6 +849,26 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 }
                 Some(Pending::ShareFile { chat_mid }) => {
                     file_actions::complete_shared_file(state, &chat_mid, &result);
+                }
+                Some(Pending::SharePrepareMedia {
+                    batch_id,
+                    message_id,
+                    o_type,
+                    suggest_name,
+                    duration_ms,
+                }) => {
+                    message_share::on_media_prepared(
+                        state,
+                        batch_id,
+                        &message_id,
+                        o_type,
+                        &suggest_name,
+                        duration_ms,
+                        &result,
+                    );
+                }
+                Some(Pending::ShareSend { batch_id, chat_mid }) => {
+                    message_share::on_item_sent(state, batch_id, &chat_mid, &result);
                 }
                 Some(Pending::DownloadMedia {
                     action,
@@ -922,6 +952,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             *state.session_ready.borrow_mut() = false;
             restore_attachment_requests(state);
             locations::fail_pending_locations(state);
+            message_share::fail_pending_shares(state);
             chat_media_viewer::fail_pending_chat_media(state, &crate::i18n::t("protocol_offline"));
             if !*state.restarting.borrow() {
                 tracing::warn!(code, "protocol engine exited unexpectedly");
@@ -962,6 +993,7 @@ pub(super) fn schedule_sidecar_recovery(state: &AppState) {
 pub(super) fn recover_sidecar(state: &AppState) {
     history::interrupted(state);
     locations::fail_pending_locations(state);
+    message_share::fail_pending_shares(state);
     restore_attachment_requests(state);
     chat_media_viewer::fail_pending_chat_media(state, &crate::i18n::t("protocol_offline"));
     match state.sidecar.recover() {
@@ -1052,6 +1084,7 @@ pub(super) fn should_preserve_shell_on_session_failure(
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    message_share::exit_selection_mode(state);
     clear_reply(state);
     state.stack.set_visible_child_name("login");
     login::show_method_stage(&state.login);

@@ -67,6 +67,16 @@ fn respond(state: &AppState, request: &serde_json::Value, result: serde_json::Va
 #[ignore = "requires a GTK display"]
 #[allow(deprecated)]
 fn gtk_file_and_image_actions_save_pick_and_share_without_network() {
+    let gdk_debug = match std::env::var("GDK_DEBUG") {
+        Ok(existing) if existing.split(',').any(|flag| flag == "no-portals") => existing,
+        Ok(existing) if !existing.is_empty() => format!("{existing},no-portals"),
+        _ => "no-portals".into(),
+    };
+    // SAFETY: invoked at test start before GTK/GDK initialization in this single-test process.
+    unsafe {
+        std::env::set_var("GDK_DEBUG", gdk_debug);
+    }
+    glib::set_application_name("LINE GTK");
     libadwaita::init().unwrap();
     let temp =
         std::env::temp_dir().join(format!("line-file-actions-fixture-{}", std::process::id()));

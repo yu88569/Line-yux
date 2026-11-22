@@ -84,7 +84,7 @@ fn gtk_flex_appointment_snapshot() {
     let texture = window
         .renderer()
         .unwrap()
-        .render_texture(&snapshot.to_node().unwrap(), None);
+        .render_texture(snapshot.to_node().unwrap(), None);
     texture.save_to_png("/tmp/line-gtk-flex.png").unwrap();
     let action = json!({"type":"bubble","body":{"type":"box","layout":"vertical","contents":[{"type":"button","action":{"type":"message","label":"Send","text":"Exact message"}}]}});
     let actions = clicked.clone();

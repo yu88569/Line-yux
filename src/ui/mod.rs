@@ -22,6 +22,9 @@ mod history;
 mod locations;
 mod login;
 mod media;
+mod message_share;
+#[cfg(test)]
+mod message_share_tests;
 mod messages;
 mod mic_test;
 mod notifications;
@@ -241,6 +244,14 @@ fn build_state(
         call_btn: shell.call_btn,
         video_call_btn: shell.video_call_btn,
         mute_btn: shell.mute_btn,
+        chat_header_stack: shell.chat_header_stack,
+        share_select_back: shell.share_select_back,
+        share_select_title: shell.share_select_title,
+        share_confirm_btn: shell.share_confirm_btn,
+        share_selection: Default::default(),
+        share_row_checks: Rc::new(RefCell::new(HashMap::new())),
+        share_batches: Rc::new(RefCell::new(HashMap::new())),
+        next_share_batch_id: Rc::new(RefCell::new(0)),
         composer_stack: shell.composer_stack,
         record_cancel_btn: shell.record_cancel_btn,
         record_send_btn: shell.record_send_btn,
@@ -782,6 +793,7 @@ fn apply_composer_narrow(state: &AppState) {
     *state.composer_narrow.borrow_mut() = narrow;
     if narrow {
         state.composer_row.add_css_class("line-composer-narrow");
+        state.composer_row.set_spacing(4);
         state.send_btn.set_label("");
         state.send_btn.set_icon_name("mail-send-symbolic");
         state
@@ -789,6 +801,7 @@ fn apply_composer_narrow(state: &AppState) {
             .set_tooltip_text(Some(&crate::i18n::t("send")));
     } else {
         state.composer_row.remove_css_class("line-composer-narrow");
+        state.composer_row.set_spacing(6);
         state.send_btn.set_icon_name("");
         state.send_btn.set_label(&crate::i18n::t("send"));
         state.send_btn.set_tooltip_text(None);
@@ -910,6 +923,8 @@ fn apply_ui_motion(state: &AppState) {
     // Keep boot→shell instant until logged in; only animate shell sub-stacks here.
     state.side_stack.set_transition_type(stack_ty);
     state.side_stack.set_transition_duration(stack_ms);
+    state.chat_header_stack.set_transition_type(stack_ty);
+    state.chat_header_stack.set_transition_duration(stack_ms);
     state
         .msg_stack
         .set_transition_type(gtk::StackTransitionType::None);
@@ -1161,6 +1176,7 @@ fn apply_ui_language(state: &AppState) {
         .location_btn
         .set_tooltip_text(Some(&crate::i18n::t("share_location")));
     refresh_attachment_drafts(state);
+    message_share::apply_language(state);
     state.side_title.set_text(&crate::i18n::t("chats"));
     state
         .composer
@@ -1382,7 +1398,8 @@ fn wire_drop_attachments(state: &AppState) {
     let active: ActiveAttachmentDrop = Rc::new(RefCell::new(None));
     let s = state.clone();
     target.connect_accept(move |target, incoming| {
-        s.current_chat.borrow().is_some()
+        !message_share::is_selecting(&s)
+            && s.current_chat.borrow().is_some()
             && target
                 .formats()
                 .is_some_and(|formats| formats.match_(&incoming.formats()))
@@ -1508,9 +1525,15 @@ fn wire_actions(state: &AppState) {
     let esc_win = gtk::EventControllerKey::new();
     esc_win.set_propagation_phase(gtk::PropagationPhase::Capture);
     esc_win.connect_key_pressed(move |_, key, _, _| {
-        if key == gdk::Key::Escape && state_chat_open(&s) {
-            dismiss_new_marker(&s);
-            return glib::Propagation::Stop;
+        if key == gdk::Key::Escape {
+            if message_share::is_selecting(&s) {
+                message_share::exit_selection_mode(&s);
+                return glib::Propagation::Stop;
+            }
+            if state_chat_open(&s) {
+                dismiss_new_marker(&s);
+                return glib::Propagation::Stop;
+            }
         }
         glib::Propagation::Proceed
     });
@@ -1522,6 +1545,7 @@ fn wire_actions(state: &AppState) {
     });
 
     wire_chat_context_menu(state);
+    message_share::wire_controls(state);
     let s = state.clone();
     state.chat_list.connect_row_activated(move |_list, row| {
         let idx = row.index() as usize;
@@ -1607,6 +1631,8 @@ fn wire_actions(state: &AppState) {
                     *s2.session_ready.borrow_mut() = false;
                     invalidate_attachment_session(&s2);
                     locations::fail_pending_locations(&s2);
+                    message_share::fail_pending_shares(&s2);
+                    message_share::exit_selection_mode(&s2);
                     s2.pending.borrow_mut().clear();
                     s2.last_marked_read.borrow_mut().clear();
                     clear_reply(&s2);
@@ -1649,6 +1675,8 @@ fn wire_actions(state: &AppState) {
                     *s2.session_ready.borrow_mut() = false;
                     invalidate_attachment_session(&s2);
                     locations::fail_pending_locations(&s2);
+                    message_share::fail_pending_shares(&s2);
+                    message_share::exit_selection_mode(&s2);
                     s2.pending.borrow_mut().clear();
                     s2.last_marked_read.borrow_mut().clear();
                     clear_reply(&s2);
@@ -1867,11 +1895,13 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
 
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
+    message_share::exit_selection_mode(state);
     clear_reply(state);
     history::reset(state, &chat.mid);
     state.current_chat.borrow_mut().replace(chat.mid.clone());
     *state.opening_unread.borrow_mut() = Some(chat.unread.max(0));
     refresh_attachment_drafts(state);
+    message_share::apply_language(state);
     hide_upload_progress(state);
     {
         let mut cfg = state.config.borrow_mut();
@@ -1967,6 +1997,8 @@ fn restart_login(state: &AppState) {
     *state.session_ready.borrow_mut() = false;
     *state.restarting.borrow_mut() = true;
     locations::fail_pending_locations(state);
+    message_share::fail_pending_shares(state);
+    message_share::exit_selection_mode(state);
     state.pending.borrow_mut().clear();
     login::show_method_stage(&state.login);
     login::set_phase(&state.login, login::LoginPhase::Restarting);

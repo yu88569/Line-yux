@@ -498,5 +498,19 @@
   "history_end": "ไม่มีข้อความเก่าที่โหลดได้แล้ว",
   "session_reconnecting": "กำลังเชื่อมต่อ LINE ใหม่ (ครั้งที่ {attempt})…",
   "session_offline": "ออฟไลน์ (เก็บเซสชันไว้แล้ว)",
-  "session_reconnect_notice": "การเชื่อมต่อขัดข้อง กำลังเชื่อมต่อใหม่อัตโนมัติ…"
+  "session_reconnect_notice": "การเชื่อมต่อขัดข้อง กำลังเชื่อมต่อใหม่อัตโนมัติ…",
+  "share_message": "แชร์",
+  "share_select_title": "เลือกข้อความ",
+  "share_button_count": "แชร์ ({n})",
+  "share_choose_chats": "เลือกแชทที่จะแชร์",
+  "share_selected_summary": "เลือกแล้ว {n} ข้อความ",
+  "share_selected_summary_one": "เลือกแล้ว 1 ข้อความ",
+  "share_send_count": "ส่ง ({n})",
+  "share_sending": "กำลังแชร์ข้อความ…",
+  "share_sent_one": "แชร์แล้ว 1 ข้อความ",
+  "share_sent_many": "แชร์แล้ว {count} ข้อความ",
+  "share_sent_multi_chats": "แชร์แล้ว {messages} ข้อความไปยัง {chats} แชท",
+  "share_sent_one_multi_chats": "แชร์แล้ว 1 ข้อความไปยัง {chats} แชท",
+  "share_partial": "แชร์แล้ว {sent} รายการ ไม่สำเร็จ {failed} รายการ",
+  "share_failed": "แชร์ไม่สำเร็จ: {error}"
 }

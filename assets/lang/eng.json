@@ -498,5 +498,19 @@
   "history_end": "No older messages available",
   "session_reconnecting": "Reconnecting to LINE (attempt {attempt})…",
   "session_offline": "Offline. Saved session kept.",
-  "session_reconnect_notice": "Connection interrupted. Retrying automatically…"
+  "session_reconnect_notice": "Connection interrupted. Retrying automatically…",
+  "share_message": "Share",
+  "share_select_title": "Select messages",
+  "share_button_count": "Share ({n})",
+  "share_choose_chats": "Share to chats",
+  "share_selected_summary": "{n} messages selected",
+  "share_selected_summary_one": "1 message selected",
+  "share_send_count": "Send ({n})",
+  "share_sending": "Sharing messages…",
+  "share_sent_one": "Shared 1 message",
+  "share_sent_many": "Shared {count} messages",
+  "share_sent_multi_chats": "Shared {messages} messages to {chats} chats",
+  "share_sent_one_multi_chats": "Shared 1 message to {chats} chats",
+  "share_partial": "Shared {sent} items, {failed} failed",
+  "share_failed": "Share failed: {error}"
 }

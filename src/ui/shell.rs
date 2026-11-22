@@ -81,6 +81,10 @@ pub struct ShellWidgets {
     pub call_btn: gtk::Button,
     pub video_call_btn: gtk::Button,
     pub mute_btn: gtk::Button,
+    pub chat_header_stack: gtk::Stack,
+    pub share_select_back: gtk::Button,
+    pub share_select_title: gtk::Label,
+    pub share_confirm_btn: gtk::Button,
     pub jump_banner: gtk::Revealer,
     pub jump_banner_btn: gtk::Button,
     pub jump_banner_label: gtk::Label,
@@ -113,6 +117,7 @@ pub fn build_shell_page() -> ShellWidgets {
     let brand = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
+        .margin_start(4)
         .valign(gtk::Align::Center)
         .css_classes(["line-app-brand"])
         .build();
@@ -346,6 +351,39 @@ pub fn build_shell_page() -> ShellWidgets {
     chat_bar.append(&call_btn);
     chat_bar.append(&video_call_btn);
 
+    let share_select_bar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(16)
+        .margin_end(16)
+        .margin_top(12)
+        .margin_bottom(12)
+        .css_classes(["line-chat-bar", "line-share-select-bar"])
+        .build();
+    let share_select_back = gtk::Button::builder()
+        .icon_name("go-previous-symbolic")
+        .tooltip_text(crate::i18n::t("cancel"))
+        .css_classes(["flat", "circular"])
+        .build();
+    let share_select_title = gtk::Label::builder()
+        .label(crate::i18n::t("share_select_title"))
+        .xalign(0.0)
+        .hexpand(true)
+        .css_classes(["title-3"])
+        .build();
+    share_select_bar.append(&share_select_back);
+    share_select_bar.append(&share_select_title);
+
+    let chat_header_stack = gtk::Stack::builder()
+        .vhomogeneous(false)
+        .hhomogeneous(true)
+        .transition_type(gtk::StackTransitionType::Crossfade)
+        .transition_duration(120)
+        .build();
+    chat_header_stack.add_named(&chat_bar, Some("normal"));
+    chat_header_stack.add_named(&share_select_bar, Some("select"));
+    chat_header_stack.set_visible_child_name("normal");
+
     let msg_stack = gtk::Stack::builder()
         .vexpand(true)
         .hexpand(true)
@@ -532,6 +570,20 @@ pub fn build_shell_page() -> ShellWidgets {
     record_bar.append(&record_timer);
     record_bar.append(&record_send_btn);
 
+    let share_action_bar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .hexpand(true)
+        .css_classes(["line-share-action-bar"])
+        .build();
+    let share_confirm_btn = gtk::Button::builder()
+        .label(crate::i18n::t("share_message"))
+        .hexpand(true)
+        .sensitive(false)
+        .css_classes(["suggested-action", "line-share-confirm-btn"])
+        .build();
+    share_action_bar.append(&share_confirm_btn);
+
     let composer_stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
         .transition_duration(120)
@@ -545,6 +597,7 @@ pub fn build_shell_page() -> ShellWidgets {
         .build();
     composer_stack.add_named(&composer_row, Some("compose"));
     composer_stack.add_named(&record_bar, Some("record"));
+    composer_stack.add_named(&share_action_bar, Some("share"));
     composer_stack.set_visible_child_name("compose");
 
     let upload_label = gtk::Label::builder()
@@ -583,7 +636,7 @@ pub fn build_shell_page() -> ShellWidgets {
         .build();
     sticker_popover.set_parent(&sticker_btn);
 
-    conversation.append(&chat_bar);
+    conversation.append(&chat_header_stack);
     conversation.append(&msg_stack);
     conversation.append(&jump_banner);
     conversation.append(&upload_revealer);
@@ -666,6 +719,10 @@ pub fn build_shell_page() -> ShellWidgets {
         call_btn,
         video_call_btn,
         mute_btn,
+        chat_header_stack,
+        share_select_back,
+        share_select_title,
+        share_confirm_btn,
         jump_banner,
         jump_banner_btn,
         jump_banner_label,
@@ -683,14 +740,8 @@ pub fn load_css() {
         .line-shell {
             background: @window_bg_color;
         }
-        .line-app-brand {
-            margin-start: 4px;
-        }
         .line-app-brand-label {
             font-weight: 600;
-        }
-        .line-app-brand-icon {
-            margin-end: 0;
         }
         .line-sidebar {
             background: alpha(@window_bg_color, 0.96);
@@ -773,7 +824,6 @@ pub fn load_css() {
         }
         .line-title-avatar {
             border-radius: 999px;
-            overflow: hidden;
             min-width: 26px;
             min-height: 26px;
             background: alpha(@borders, 0.35);
@@ -783,7 +833,6 @@ pub fn load_css() {
         }
         .line-avatar-frame {
             border-radius: 999px;
-            overflow: hidden;
             min-width: 48px;
             min-height: 48px;
             background: alpha(@borders, 0.35);
@@ -810,7 +859,6 @@ pub fn load_css() {
         }
         .line-call-avatar {
             border-radius: 999px;
-            overflow: hidden;
             min-width: 96px;
             min-height: 96px;
             background: alpha(@accent_bg_color, 0.35);
@@ -830,26 +878,22 @@ pub fn load_css() {
         }
         .line-camera-preview {
             border-radius: 12px;
-            overflow: hidden;
             background: #141416;
             border: 1px solid alpha(@borders, 0.55);
         }
         .line-call-video-stage {
             border-radius: 14px;
-            overflow: hidden;
             background: #101013;
             border: 1px solid alpha(@borders, 0.45);
         }
         .line-call-local-pip {
             border-radius: 10px;
-            overflow: hidden;
             background: #1c1c20;
             border: 2px solid alpha(white, 0.28);
             box-shadow: 0 4px 14px alpha(black, 0.45);
         }
         .line-voice-card {
             min-width: 180px;
-            max-width: min(340px, 78%);
             padding: 2px 0;
         }
         .line-voice-play {
@@ -1008,7 +1052,6 @@ pub fn load_css() {
         .line-chat-preview { opacity: 0.72; font-size: 0.85em; }
         .line-bubble-image {
             border-radius: 12px;
-            max-width: min(420px, 72%);
         }
         .line-bubble.line-bubble-sticker,
         .line-bubble.line-bubble-media {
@@ -1019,9 +1062,6 @@ pub fn load_css() {
             padding: 0;
             margin: 0;
         }
-        .line-bubble.line-bubble-sticker {
-            max-width: min(160px, 56%);
-        }
         .line-bubble-sticker .line-bubble-image,
         .line-sticker-image {
             background: transparent;
@@ -1029,7 +1069,6 @@ pub fn load_css() {
             border: none;
             box-shadow: none;
             border-radius: 0;
-            max-width: 160px;
         }
         .line-bubble.line-bubble-flex {
             padding: 0;
@@ -1043,7 +1082,6 @@ pub fn load_css() {
             background: alpha(@card_bg_color, 0.98);
             border: 1px solid alpha(@borders, 0.55);
             min-width: 180px;
-            max-width: min(420px, 72%);
         }
         .line-flex-title { font-weight: 700; }
         .line-flex-action { margin-top: 4px; }
@@ -1080,7 +1118,6 @@ pub fn load_css() {
             border-radius: 16px;
             padding: 8px 12px;
             box-shadow: 0 1px 2px alpha(@window_fg_color, 0.08);
-            max-width: min(480px, 72%);
         }
         .line-bubble-in {
             background: alpha(@card_bg_color, 0.97);
@@ -1202,9 +1239,6 @@ pub fn load_css() {
             min-height: 34px;
             padding: 0 14px;
         }
-        .line-composer-narrow {
-            spacing: 4px;
-        }
         .line-composer-narrow .line-send-btn {
             min-width: 34px;
             min-height: 32px;
@@ -1298,6 +1332,42 @@ pub fn load_css() {
         }
         .line-login-qr {
             border-radius: 8px;
+        }
+        .line-avatar-xs,
+        .line-avatar-xs.line-avatar,
+        .line-avatar-frame.line-avatar-xs {
+            min-width: 36px;
+            min-height: 36px;
+        }
+        checkbutton.line-msg-select-check > check {
+            min-width: 22px;
+            min-height: 22px;
+            border-radius: 999px;
+            border: 2px solid alpha(@window_fg_color, 0.35);
+            background: transparent;
+            color: white;
+            transition: background-color 120ms ease, border-color 120ms ease;
+        }
+        checkbutton.line-msg-select-check:hover > check {
+            border-color: #06c755;
+        }
+        checkbutton.line-msg-select-check > check:checked {
+            background: #06c755;
+            background-color: #06c755;
+            border-color: #06c755;
+            color: white;
+        }
+        .line-msg-selected {
+            background: alpha(#06c755, 0.10);
+            border-radius: 12px;
+        }
+        .line-share-action-bar {
+            padding: 4px 2px;
+        }
+        .line-share-confirm-btn {
+            min-height: 40px;
+            font-weight: 700;
+            border-radius: 12px;
         }
         "#,
     );

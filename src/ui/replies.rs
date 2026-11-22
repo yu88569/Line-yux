@@ -8,10 +8,10 @@ pub(super) fn setup_reply_strip(state: &AppState) {
     state.reply_back.connect_clicked(move |_| {
         let jump = s.reply_jump.borrow_mut().take();
         s.reply_back.set_visible(false);
-        if let Some((chat, _, origin)) = jump {
-            if s.current_chat.borrow().as_deref() == Some(&chat) {
-                reveal_message(&s, &origin);
-            }
+        if let Some((chat, _, origin)) = jump
+            && s.current_chat.borrow().as_deref() == Some(&chat)
+        {
+            reveal_message(&s, &origin);
         }
     });
     state
@@ -136,6 +136,20 @@ pub(super) fn attach_reply_menu(state: &AppState, bubble: &gtk::Box, msg: &Messa
         });
         actions.append(&copy);
     }
+    if super::message_share::classify_shareable(msg).is_some() {
+        let share = gtk::Button::with_label(&crate::i18n::t("share_message"));
+        share.add_css_class("flat");
+        let s = state.clone();
+        let share_id = msg.id.clone();
+        let weak_menu = menu.downgrade();
+        share.connect_clicked(move |_| {
+            if let Some(menu) = weak_menu.upgrade() {
+                menu.popdown();
+            }
+            super::message_share::enter_selection_mode(&s, &share_id);
+        });
+        actions.append(&share);
+    }
     menu.set_child(Some(&actions));
     let s = state.clone();
     let weak_menu = menu.downgrade();
@@ -149,8 +163,13 @@ pub(super) fn attach_reply_menu(state: &AppState, bubble: &gtk::Box, msg: &Messa
     let gesture = gtk::GestureClick::new();
     gesture.set_button(3);
     gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let s_press = state.clone();
     let weak_menu = menu.downgrade();
     gesture.connect_pressed(move |gesture, _, x, y| {
+        if super::message_share::is_selecting(&s_press) {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            return;
+        }
         gesture.set_state(gtk::EventSequenceState::Claimed);
         if let Some(menu) = weak_menu.upgrade() {
             menu.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));

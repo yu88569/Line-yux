@@ -1472,7 +1472,7 @@ fn gtk_flex_chat_integration() {
         .window
         .renderer()
         .unwrap()
-        .render_texture(&snapshot.to_node().unwrap(), None)
+        .render_texture(snapshot.to_node().unwrap(), None)
         .save_to_png("/tmp/line-gtk-flex-chat.png")
         .unwrap();
     state.window.close();

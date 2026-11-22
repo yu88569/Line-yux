@@ -631,12 +631,13 @@ pub(super) fn sync_open_chat_read_state(state: &AppState) {
     let Some(mid) = state.current_chat.borrow().clone() else {
         return;
     };
-    if !*state.scroll_pinning.borrow() && is_near_bottom(&state.message_scroll.vadjustment()) {
-        if !*state.stick_bottom.borrow() {
-            *state.stick_bottom.borrow_mut() = true;
-            *state.pending_new_below.borrow_mut() = 0;
-            update_jump_banner(state);
-        }
+    if !*state.scroll_pinning.borrow()
+        && is_near_bottom(&state.message_scroll.vadjustment())
+        && !*state.stick_bottom.borrow()
+    {
+        *state.stick_bottom.borrow_mut() = true;
+        *state.pending_new_below.borrow_mut() = 0;
+        update_jump_banner(state);
     }
     if *state.stick_bottom.borrow() {
         mark_chat_read(state, &mid);
@@ -734,6 +735,7 @@ fn toggle_chat_mute_for(state: &AppState, mid: &str) {
 
 pub(super) fn set_chat_hidden(state: &AppState, mid: &str, hidden: bool) {
     if hidden && state.current_chat.borrow().as_deref() == Some(mid) {
+        message_share::exit_selection_mode(state);
         finish_voice_record(state, false);
         clear_reply(state);
         *state.current_chat.borrow_mut() = None;

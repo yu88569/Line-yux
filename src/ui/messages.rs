@@ -343,6 +343,7 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         .hexpand(true)
         .valign(gtk::Align::End)
         .build();
+    super::message_share::attach_row_selection(state, &row, &outer, msg);
 
     super::replies::update_reply_thumbnail(state, msg);
     let is_sticker = msg.content_type.eq_ignore_ascii_case("sticker");
@@ -1487,6 +1488,7 @@ pub(super) fn clear_messages(state: &AppState) {
     state.sender_avatars.borrow_mut().clear_rows();
     state.media_slots.borrow_mut().clear();
     state.media_msgs.borrow_mut().clear();
+    state.share_row_checks.borrow_mut().clear();
     state.chat_media.borrow_mut().clear();
     state.receipt_slots.borrow_mut().clear();
     state.msg_created.borrow_mut().clear();
