@@ -15,7 +15,13 @@ import { join } from "@std/path";
 import { atomicWriteJson } from "./storage.ts";
 import type { CachePolicy } from "./cache_policy.ts";
 import { friendName, picturePathOf } from "./contacts.ts";
-import { chatInfo, type ContactInfo } from "./chat_identity.ts";
+import {
+  CHAT_CACHE_VERSION,
+  type ChatCache,
+  chatInfo,
+  type ChatRow,
+  type ContactInfo,
+} from "./chat_identity.ts";
 import {
   classifyPasswordLoginFailure,
   type LineDevice,
@@ -30,18 +36,6 @@ import {
 } from "./file_metadata.ts";
 
 type Json = Record<string, unknown>;
-type ChatRow = {
-  mid: string;
-  name: string;
-  kind: string;
-  avatarPath: string | null;
-  picturePath?: string | null;
-  lastActivity: number;
-  unread: number;
-  preview: string;
-  muted?: boolean;
-};
-type ChatCache = { at: number; chats: ChatRow[] };
 type BoxCursor = { messageId: bigint | number; deliveredTime: bigint | number };
 
 export type CommandRuntime = {
@@ -185,6 +179,7 @@ export function createCommandService(runtime: CommandRuntime) {
         const row = chatCache.chats.find((x) => x.mid === chatMid);
         if (row && row.unread !== 0) {
           row.unread = 0;
+          chatCache.version = CHAT_CACHE_VERSION;
           try {
             await atomicWriteJson(chatCachePath, chatCache);
           } catch (error) {
@@ -320,6 +315,7 @@ export function createCommandService(runtime: CommandRuntime) {
       await refreshCachePolicy();
       const raw = JSON.parse(await Deno.readTextFile(chatCachePath));
       if (
+        raw?.version === CHAT_CACHE_VERSION &&
         Array.isArray(raw?.chats) &&
         Date.now() - Number(raw.at || 0) < cachePolicy().diskChat
       ) {
@@ -483,7 +479,7 @@ export function createCommandService(runtime: CommandRuntime) {
         return a.name.localeCompare(b.name);
       });
 
-      chatCache = { at: Date.now(), chats };
+      chatCache = { version: CHAT_CACHE_VERSION, at: Date.now(), chats };
       runtime.setChatCache(chatCache);
       try {
         await atomicWriteJson(chatCachePath, chatCache);
@@ -722,9 +718,9 @@ export function createCommandService(runtime: CommandRuntime) {
                   );
                   const cur = contactIndex.get(from);
                   if (cur) cur.kind = "bot";
-                  else {
+                  else if (from === chatMid && from.startsWith("u")) {
                     contactIndex.set(from, {
-                      name: contactIndex.get(from)?.name || from,
+                      name: from,
                       picturePath: null,
                       kind: "bot",
                       muted: false,

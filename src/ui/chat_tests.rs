@@ -1652,3 +1652,76 @@ fn gtk_history_prepend_keeps_reading_anchor_and_live_rows() {
     state.window.close();
     let _ = std::fs::remove_dir_all(temp);
 }
+
+#[test]
+#[ignore = "requires a GTK display"]
+fn gtk_chat_upsert_metadata_update_preserves_order_and_only_promotes_new_activity() {
+    let (temp, _, _app, state) =
+        chat_fixture("chat-upsert-order", "dev.linegtk.ChatUpsertOrderFixture");
+    *state.restored_last_chat.borrow_mut() = true;
+    apply_chats(
+        &state,
+        vec![
+            chat("c-active-1", 500),
+            chat("c-active-2", 200),
+            chat("u-inactive", 0),
+        ],
+        false,
+    );
+
+    let mut meta_update = chat("u-inactive", 0);
+    meta_update.name = "Renamed Friend".into();
+    handle_event(&state, ProtocolEvent::ChatUpsert { chat: meta_update });
+    drain();
+    assert_eq!(
+        state
+            .chats
+            .borrow()
+            .iter()
+            .map(|c| c.mid.as_str())
+            .collect::<Vec<_>>(),
+        ["c-active-1", "c-active-2", "u-inactive"],
+        "metadata-only ChatUpsert must not promote inactive chat above active chats"
+    );
+    let label = descendants(row(&state, "u-inactive").upcast_ref())
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Label>().ok())
+        .find(|label| label.has_css_class("line-chat-name"))
+        .unwrap();
+    assert_eq!(label.text().as_str(), "Renamed Friend");
+
+    let mut new_inactive = chat("u-added-friend", 0);
+    new_inactive.name = "Added Friend".into();
+    handle_event(&state, ProtocolEvent::ChatUpsert { chat: new_inactive });
+    drain();
+    assert_eq!(
+        state
+            .chats
+            .borrow()
+            .iter()
+            .map(|c| c.mid.as_str())
+            .collect::<Vec<_>>(),
+        ["c-active-1", "c-active-2", "u-added-friend", "u-inactive"],
+        "newly added inactive chat inserts below active chats"
+    );
+
+    let mut active_bump = chat("u-inactive", 900);
+    active_bump.preview = "new message".into();
+    handle_event(&state, ProtocolEvent::ChatUpsert { chat: active_bump });
+    drain();
+    assert_eq!(
+        state
+            .chats
+            .borrow()
+            .iter()
+            .map(|c| c.mid.as_str())
+            .collect::<Vec<_>>(),
+        ["u-inactive", "c-active-1", "c-active-2", "u-added-friend"],
+        "real newer lastActivity promotes chat to top"
+    );
+
+    state.window.destroy();
+    state.discord.shutdown();
+    drain();
+    std::fs::remove_dir_all(temp).unwrap();
+}

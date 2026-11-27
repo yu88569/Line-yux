@@ -39,7 +39,8 @@ export type ListenerRuntime = {
     summary: Json,
     chatMid: string,
   ) => Promise<void>;
-  upsertChatFromContact: (mid: string) => Promise<void>;
+  onContactAdded?: (mid: string) => void | Promise<void>;
+  onProfileUpdated?: (mid: string) => void | Promise<void>;
   emitEvent: (event: string, payload?: Json) => void;
 };
 
@@ -49,7 +50,6 @@ export function createListener(runtime: ListenerRuntime) {
     storeBoxCursor,
     upsertChatFromMessage,
     hydrateLiveMedia,
-    upsertChatFromContact,
     emitEvent,
   } = runtime;
 
@@ -166,13 +166,29 @@ export function createListener(runtime: ListenerRuntime) {
             messageId: String(op.param3 ?? ""),
           });
         } else if (
-          type.includes("ADD_CONTACT") ||
-          type.includes("ACCEPT_CONTACT") ||
-          type.includes("FRIEND_REQUEST") ||
-          type === "NOTIFIED_UPDATE_PROFILE"
+          type === "ADD_CONTACT" ||
+          type === "4" ||
+          type === "FRIEND_REQUEST_ACCEPTED" ||
+          type === "63"
         ) {
           const mid = String(op.param1 ?? op.param2 ?? "");
-          if (mid) void upsertChatFromContact(mid);
+          if (mid) {
+            void Promise.resolve(runtime.onContactAdded?.(mid)).catch(
+              (error) => console.error("[listen contact_added]", mid, error),
+            );
+          }
+        } else if (
+          type === "NOTIFIED_UPDATE_PROFILE" ||
+          type === "2" ||
+          type === "NOTIFIED_BUDDY_UPDATE_PROFILE" ||
+          type === "78"
+        ) {
+          const mid = String(op.param1 ?? "");
+          if (mid) {
+            void Promise.resolve(runtime.onProfileUpdated?.(mid)).catch(
+              (error) => console.error("[listen profile_updated]", mid, error),
+            );
+          }
         }
       } catch (e) {
         console.error("[listen event]", e);

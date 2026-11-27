@@ -147,11 +147,28 @@ pub(super) fn ensure_chat_visible(state: &AppState, chat: &ChatInfo) {
     upsert_chat_row(state, chat.clone());
 }
 
+fn insert_chat_position(
+    chats: &[ChatInfo],
+    config: &AppConfig,
+    mid: &str,
+    last_activity: i64,
+) -> usize {
+    let pinned = config.chat_pinned(mid);
+    chats
+        .iter()
+        .take_while(|c| {
+            let c_pinned = config.chat_pinned(&c.mid);
+            (c_pinned && !pinned) || (c_pinned == pinned && c.last_activity > last_activity)
+        })
+        .count()
+}
+
 pub(super) fn upsert_chat_row(state: &AppState, chat: ChatInfo) {
     let mid = chat.mid.clone();
     let existed = state.chats.borrow().iter().any(|c| c.mid == mid);
 
     if existed {
+        let mut promoted = false;
         if let Some(cur) = state.chats.borrow_mut().iter_mut().find(|c| c.mid == mid) {
             if !chat.name.is_empty() && chat.name != mid {
                 cur.name = chat.name.clone();
@@ -164,6 +181,7 @@ pub(super) fn upsert_chat_row(state: &AppState, chat: ChatInfo) {
             }
             if chat.last_activity > cur.last_activity {
                 cur.last_activity = chat.last_activity;
+                promoted = true;
             }
             if let Some(path) = chat.avatar_path.clone() {
                 cur.avatar_path = Some(path);
@@ -174,9 +192,11 @@ pub(super) fn upsert_chat_row(state: &AppState, chat: ChatInfo) {
         {
             label.set_text(&chat.preview);
         }
-        // Refresh visible name on the row: rebuild is heavy; update via child labels if needed.
-        // Promote to top so new activity is obvious.
-        promote_chat_to_top(state, &mid);
+        // Only promote rows whose activity timestamp actually advanced; metadata
+        // updates (name/avatar/mute) keep the chat in its current sidebar slot.
+        if promoted {
+            promote_chat_to_top(state, &mid);
+        }
         // Update name label on the row (first heading label in the row).
         if let Some(pos) = state.chats.borrow().iter().position(|c| c.mid == mid)
             && let Some(row) = state.chat_list.row_at_index(pos as i32)
@@ -207,16 +227,12 @@ pub(super) fn upsert_chat_row(state: &AppState, chat: ChatInfo) {
         .chat_unread_badges
         .borrow_mut()
         .insert(mid.clone(), badge);
-    let pos = if state.config.borrow().chat_pinned(&mid) {
-        0
-    } else {
-        state
-            .chats
-            .borrow()
-            .iter()
-            .take_while(|c| state.config.borrow().chat_pinned(&c.mid))
-            .count()
-    };
+    let pos = insert_chat_position(
+        &state.chats.borrow(),
+        &state.config.borrow(),
+        &mid,
+        chat.last_activity,
+    );
     state.chats.borrow_mut().insert(pos, chat);
     state.chat_list.insert(&row, pos as i32);
     set_side_state(state, "list", None);
@@ -1171,5 +1187,30 @@ mod preference_tests {
         assert!(!should_send_mark_read(Some("100"), "99", 0));
         assert!(should_send_mark_read(Some("100"), "100", 2));
         assert!(should_send_mark_read(Some("100"), "101", 0));
+    }
+
+    #[test]
+    fn insert_chat_position_places_inactive_chats_after_active_and_pinned() {
+        let mut cfg = AppConfig::default();
+        cfg.chat_preferences
+            .entry("c-pinned".into())
+            .or_default()
+            .pinned = true;
+        let chats = vec![
+            chat("c-pinned", 10),
+            chat("u-active-new", 500),
+            chat("u-active-old", 100),
+            chat("u-inactive", 0),
+        ];
+        assert_eq!(insert_chat_position(&chats, &cfg, "u-new-friend", 0), 3);
+        assert_eq!(insert_chat_position(&chats, &cfg, "u-mid", 250), 2);
+        assert_eq!(insert_chat_position(&chats, &cfg, "u-top", 900), 1);
+
+        cfg.chat_preferences
+            .entry("u-pinned-new".into())
+            .or_default()
+            .pinned = true;
+        assert_eq!(insert_chat_position(&chats, &cfg, "u-pinned-new", 5), 1);
+        assert_eq!(insert_chat_position(&chats, &cfg, "u-pinned-new", 20), 0);
     }
 }

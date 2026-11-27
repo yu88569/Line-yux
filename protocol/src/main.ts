@@ -31,8 +31,16 @@ import { createStickerService } from "./stickers.ts";
 import { resolveSenderAvatar } from "./sender_avatar.ts";
 import { createCommandService } from "./commands.ts";
 import {
+  CHAT_CACHE_VERSION,
+  type ChatCache,
+  type ChatRow,
   type ContactInfo,
+  CONTACTS_CACHE_VERSION,
+  handleContactAdded,
+  handleProfileUpdate,
+  pruneUserContacts,
   resolveContactInfo as resolveIdentity,
+  resolveSenderPicture,
 } from "./chat_identity.ts";
 import { createListener } from "./listener.ts";
 import { createMessageView } from "./message_view.ts";
@@ -50,18 +58,6 @@ import {
 } from "./albums.ts";
 
 type Json = Record<string, unknown>;
-
-type ChatRow = {
-  mid: string;
-  name: string;
-  kind: string;
-  avatarPath: string | null;
-  picturePath?: string | null;
-  lastActivity: number;
-  unread: number;
-  preview: string;
-  muted?: boolean;
-};
 
 const dataDir = Deno.env.get("LINE_GTK_DATA") ??
   join(Deno.env.get("HOME") ?? ".", ".local", "share", "line-gtk");
@@ -345,16 +341,22 @@ const outgoingMedia = createOutgoingMedia({
   fail,
 });
 
-let chatCache: { at: number; chats: ChatRow[] } | null = null;
+let chatCache: ChatCache | null = null;
 const msgCache = new Map<string, { at: number; messages: Json[] }>();
 const inFlight = new Map<string, Promise<unknown>>();
 const contactIndex = new Map<string, ContactInfo>();
+const senderPictureCache = new Map<string, string | null>();
 const mediaEpoch = new Map<string, number>();
 type BoxCursor = {
   messageId: bigint | number;
   deliveredTime: bigint | number;
 };
 const boxCursor = new Map<string, BoxCursor>();
+
+async function saveChatCache(cache: ChatCache) {
+  cache.version = CHAT_CACHE_VERSION;
+  await atomicWriteJson(chatCachePath, cache);
+}
 
 const listener = createListener({
   getClient: () => client,
@@ -365,7 +367,7 @@ const listener = createListener({
     if (!row || row.unread === 0) return;
     row.unread = 0;
     try {
-      await atomicWriteJson(chatCachePath, chatCache);
+      await saveChatCache(chatCache);
     } catch (error) {
       console.error("[chat-read-cache]", chatMid, error);
     }
@@ -385,7 +387,8 @@ const listener = createListener({
   storeBoxCursor,
   upsertChatFromMessage,
   hydrateLiveMedia,
-  upsertChatFromContact,
+  onContactAdded: (mid) => handleContactAdded(mid, contactSyncRuntime),
+  onProfileUpdated: (mid) => handleProfileUpdate(mid, contactSyncRuntime),
   emitEvent,
 });
 
@@ -683,7 +686,7 @@ async function loadDiskContacts() {
   if (contactIndex.size > 0) return;
   try {
     const raw = JSON.parse(await Deno.readTextFile(contactCachePath));
-    if (!raw?.contacts) return;
+    if (raw?.version !== CONTACTS_CACHE_VERSION || !raw?.contacts) return;
     for (
       const [mid, c] of Object.entries(
         raw.contacts as Record<string, {
@@ -713,7 +716,11 @@ async function saveDiskContacts() {
   > = {};
   for (const [mid, c] of contactIndex) contacts[mid] = c;
   try {
-    await atomicWriteJson(contactCachePath, { at: Date.now(), contacts });
+    await atomicWriteJson(contactCachePath, {
+      version: CONTACTS_CACHE_VERSION,
+      at: Date.now(),
+      contacts,
+    });
   } catch (error) {
     console.error("[contacts-cache]", error);
   }
@@ -755,6 +762,7 @@ async function refreshContactIndex(force = false) {
   }
   const ids: string[] = await client.base.talk.getAllContactIds({});
   // Include open message boxes so bots/OA resolve even if not in the friend list.
+  let boxesLoaded = false;
   try {
     const boxes = await client.base.talk.getMessageBoxes({
       messageBoxListRequest: {},
@@ -763,6 +771,7 @@ async function refreshContactIndex(force = false) {
       const mid = String(box.id ?? "");
       if (mid.startsWith("u") && !ids.includes(mid)) ids.push(mid);
     }
+    boxesLoaded = true;
   } catch { /* ignore */ }
 
   // Chunk to avoid huge thrift payloads
@@ -808,6 +817,9 @@ async function refreshContactIndex(force = false) {
         }
       }
     }
+  }
+  if (boxesLoaded) {
+    pruneUserContacts(contactIndex, new Set(ids));
   }
   contactsAt = Date.now();
   await saveDiskContacts();
@@ -1440,7 +1452,7 @@ async function hydratePreviews(chats: ChatRow[]) {
 
   if (chatCache) {
     try {
-      await atomicWriteJson(chatCachePath, chatCache);
+      await saveChatCache(chatCache);
     } catch (error) {
       console.error("[chat-preview-cache]", error);
     }
@@ -1520,7 +1532,7 @@ async function hydrateAvatars(chats: ChatRow[]) {
   });
   if (chatCache) {
     try {
-      await atomicWriteJson(chatCachePath, chatCache);
+      await saveChatCache(chatCache);
     } catch (error) {
       console.error("[chat-avatar-cache]", error);
     }
@@ -1539,12 +1551,26 @@ async function resolveContactInfo(mid: string): Promise<ContactInfo> {
   });
 }
 
+const contactSyncRuntime = {
+  contactIndex,
+  senderPictureCache,
+  getTalk: () => client?.base.talk ?? null,
+  saveContacts: saveDiskContacts,
+  getChatCache: () => chatCache,
+  saveChatCache,
+  existingAvatar: (mid: string) => existingFile(join(avatarDir, `${mid}.jpg`)),
+  hydrateAvatars,
+  emitEvent,
+};
+
 async function upsertChatFromMessage(message: Json) {
   const peer = messageChatMid(message);
   if (!peer) return;
   const preview = previewLine(message);
   const activity = Number(message.createdTime ?? 0);
-  if (!chatCache) chatCache = { at: Date.now(), chats: [] };
+  if (!chatCache) {
+    chatCache = { version: CHAT_CACHE_VERSION, at: Date.now(), chats: [] };
+  }
 
   let row = chatCache.chats.find((x) => x.mid === peer);
   let created = false;
@@ -1559,6 +1585,7 @@ async function upsertChatFromMessage(message: Json) {
       lastActivity: activity,
       unread: 0,
       preview,
+      muted: info.muted,
     };
     created = true;
   } else {
@@ -1575,7 +1602,7 @@ async function upsertChatFromMessage(message: Json) {
   chatCache.chats = [row, ...chatCache.chats.filter((c) => c.mid !== peer)];
   chatCache.at = Date.now();
   try {
-    await atomicWriteJson(chatCachePath, chatCache);
+    await saveChatCache(chatCache);
   } catch (error) {
     console.error("[chat-message-cache]", peer, error);
   }
@@ -1585,39 +1612,6 @@ async function upsertChatFromMessage(message: Json) {
   if (row.picturePath && !row.avatarPath) {
     hydrateAvatars([row]);
   }
-}
-
-async function upsertChatFromContact(mid: string) {
-  if (!mid || (!mid.startsWith("u") && !mid.startsWith("c"))) return;
-  const info = await resolveContactInfo(mid);
-  if (!chatCache) chatCache = { at: Date.now(), chats: [] };
-  let row = chatCache.chats.find((x) => x.mid === mid);
-  const created = !row;
-  if (!row) {
-    row = {
-      mid,
-      name: info.name,
-      kind: info.kind,
-      picturePath: info.picturePath,
-      avatarPath: await existingFile(join(avatarDir, `${mid}.jpg`)),
-      lastActivity: Date.now(),
-      unread: 0,
-      preview: "",
-    };
-  } else {
-    row.name = info.name || row.name;
-    row.kind = info.kind || row.kind;
-    row.picturePath = info.picturePath ?? row.picturePath ?? null;
-  }
-  chatCache.chats = [row, ...chatCache.chats.filter((c) => c.mid !== mid)];
-  chatCache.at = Date.now();
-  try {
-    await atomicWriteJson(chatCachePath, chatCache);
-  } catch (error) {
-    console.error("[chat-contact-cache]", mid, error);
-  }
-  emitEvent("chat_upsert", { chat: row, created });
-  if (row.picturePath && !row.avatarPath) hydrateAvatars([row]);
 }
 
 /**
@@ -1785,7 +1779,12 @@ async function handle(req: Json) {
       case "resolve_sender_avatar": {
         const avatarPath = await resolveSenderAvatar(params.senderMid, {
           existingPath: (mid) => existingFile(join(avatarDir, `${mid}.jpg`)),
-          resolveContact: resolveContactInfo,
+          resolveContact: (mid) =>
+            resolveSenderPicture(mid, {
+              contactIndex,
+              senderPictureCache,
+              getTalk: () => client?.base.talk ?? null,
+            }),
           avatarPathFor,
           dedupe,
           emitReady: (mid, avatarPath) =>
@@ -2073,6 +2072,7 @@ async function handle(req: Json) {
           } catch { /* ignore */ }
           chatCache = null;
           contactIndex.clear();
+          senderPictureCache.clear();
           contactsAt = 0;
         }
         if (kind === "messages" || kind === "all") {
@@ -2190,6 +2190,7 @@ async function handle(req: Json) {
         } catch { /* ignore */ }
         listening = false;
         chatCache = null;
+        senderPictureCache.clear();
         msgCache.clear();
         await commands.clearHistory();
         ok(id, {});

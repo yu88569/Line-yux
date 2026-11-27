@@ -77,7 +77,6 @@ for (const healthyIdle of [false, true]) {
         storeBoxCursor: () => {},
         upsertChatFromMessage: () => Promise.resolve(),
         hydrateLiveMedia: () => Promise.resolve(),
-        upsertChatFromContact: () => Promise.resolve(),
         emitEvent: () => {},
       };
       const listener = createListener(runtime);
@@ -167,7 +166,6 @@ function fixture() {
       events.push("media");
       return Promise.resolve();
     },
-    upsertChatFromContact: () => Promise.resolve(),
     emitEvent: (event) => {
       events.push(event);
     },

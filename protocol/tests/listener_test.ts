@@ -93,7 +93,6 @@ for (
         hydrated.resolve();
         return Promise.resolve();
       },
-      upsertChatFromContact: () => Promise.resolve(),
       emitEvent: (event, payload) => {
         events.push({ event, payload });
       },
@@ -214,7 +213,6 @@ Deno.test("listener treats SEND_MESSAGE ops as mine even when raw from is empty"
           return Promise.resolve();
         },
         hydrateLiveMedia: () => Promise.resolve(),
-        upsertChatFromContact: () => Promise.resolve(),
         emitEvent: (event, payload) => {
           events.push({ event, payload });
         },
@@ -299,7 +297,6 @@ Deno.test("listener handles SEND_CHAT_CHECKED ops and emits chat_read", async ()
       storeBoxCursor: () => {},
       upsertChatFromMessage: () => Promise.resolve(),
       hydrateLiveMedia: () => Promise.resolve(),
-      upsertChatFromContact: () => Promise.resolve(),
       emitEvent: (event, payload) => {
         events.push({ event, payload });
       },
@@ -326,5 +323,95 @@ Deno.test("listener handles SEND_CHAT_CHECKED ops and emits chat_read", async ()
         payload: { chatMid: "u-peer-1", messageId: "999888777" },
       },
     ]);
+  }
+});
+
+Deno.test("listener routes only explicit contact/profile ops and ignores stranger notifications", async () => {
+  const client = new Client(
+    new BaseClient({
+      device: "ANDROIDSECONDARY",
+      fetch: () => {
+        throw new Error("Network forbidden in listener test");
+      },
+    }),
+  );
+  Object.defineProperty(client, "listen", { value: () => {} });
+  const contactAdded: string[] = [];
+  const profileUpdated: string[] = [];
+  const listener = createListener({
+    getClient: () => client,
+    onTransportStalled: () => {},
+    setListening: () => {},
+    summarizeTalkMessage: () => Promise.resolve({}),
+    invalidateMessages: () => {},
+    storeBoxCursor: () => {},
+    upsertChatFromMessage: () => Promise.resolve(),
+    hydrateLiveMedia: () => Promise.resolve(),
+    onContactAdded: (mid) => {
+      contactAdded.push(mid);
+    },
+    onProfileUpdated: (mid) => {
+      profileUpdated.push(mid);
+    },
+    emitEvent: () => {},
+  });
+  listener.start();
+  try {
+    for (
+      const opType of [
+        "NOTIFIED_UPDATE_PROFILE",
+        2,
+        "NOTIFIED_BUDDY_UPDATE_PROFILE",
+        78,
+      ] as const
+    ) {
+      client.emit(
+        "event",
+        { type: opType, param1: `u-prof-${opType}` } as never,
+      );
+    }
+    for (
+      const opType of [
+        "ADD_CONTACT",
+        4,
+        "FRIEND_REQUEST_ACCEPTED",
+        63,
+      ] as const
+    ) {
+      client.emit(
+        "event",
+        { type: opType, param1: `u-add-${opType}` } as never,
+      );
+    }
+    for (
+      const opType of [
+        "NOTIFIED_ADD_CONTACT",
+        5,
+        "NOTIFIED_FRIEND_REQUEST",
+        88,
+        "NOTIFIED_RECOMMEND_CONTACT",
+        8,
+      ] as const
+    ) {
+      client.emit(
+        "event",
+        { type: opType, param1: `u-stranger-${opType}` } as never,
+      );
+    }
+    await Promise.resolve();
+    assertEquals(profileUpdated, [
+      "u-prof-NOTIFIED_UPDATE_PROFILE",
+      "u-prof-2",
+      "u-prof-NOTIFIED_BUDDY_UPDATE_PROFILE",
+      "u-prof-78",
+    ]);
+    assertEquals(contactAdded, [
+      "u-add-ADD_CONTACT",
+      "u-add-4",
+      "u-add-FRIEND_REQUEST_ACCEPTED",
+      "u-add-63",
+    ]);
+  } finally {
+    listener.stop();
   }
 });
